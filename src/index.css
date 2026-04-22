@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  background-color: #050505;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+@layer components {
+  .app-bg {
+    @apply fixed inset-0 z-0 pointer-events-none overflow-hidden bg-[#050505];
+    background-image: 
+      radial-gradient(circle at 50% -20%, rgba(45, 91, 255, 0.15) 0%, transparent 50%),
+      radial-gradient(circle at 0% 100%, rgba(0, 240, 255, 0.05) 0%, transparent 40%);
+  }
+
+  .premium-glass {
+    @apply bg-white/[0.02] backdrop-blur-2xl border border-white/10 shadow-2xl relative overflow-hidden;
+  }
+
+  .cyber-btn-primary {
+    @apply bg-[#2D5BFF] text-white transition-all duration-300 shadow-[0_0_20px_rgba(45,91,255,0.3)] hover:shadow-[0_0_40px_rgba(45,91,255,0.5)] hover:bg-[#1f4ae0] active:scale-95;
+  }
+
+  .cyber-btn-ghost {
+    @apply bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-95;
+  }
+}
