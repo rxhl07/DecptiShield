@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Terminal, Activity } from 'lucide-react';
-import { socket } from '../socket';
 
 export interface LogEntry {
     id: string;
@@ -18,41 +17,11 @@ const RISK_CONFIG: Record<LogEntry['risk'], { color: string; bg: string; border:
     CRITICAL: { color: '#EF4444', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.4)' },
 };
 
-export default function LiveFeed() {
-    const [logs, setLogs] = useState<LogEntry[]>([]);
+// Accept logs as a prop from the Dashboard
+export default function LiveFeed({ logs }: { logs: LogEntry[] }) {
     const scrollRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        // Debug: Log to see if the socket is actually connected
-        console.log("Socket status on mount:", socket.connected ? "Connected" : "Disconnected");
-
-        const handleNewAttack = (data: any) => {
-            console.log("🚨 Data received from socket:", data); // THIS IS YOUR KEY DEBUG LINE
-
-            const newLog: LogEntry = {
-                // Ensure we have a truly unique ID
-                id: (data.sessionId || 'web') + '-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
-                timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-                command: data.command || 'Unknown Command',
-                risk: (data.severity as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL') || 'LOW',
-                score: data.threatScore || 0
-            };
-
-            setLogs((prev) => {
-                const updatedLogs = [...prev, newLog];
-                return updatedLogs.slice(-30);
-            });
-        };
-
-        // Ensure we aren't attaching multiple listeners
-        socket.off('live_feed_update');
-        socket.on('live_feed_update', handleNewAttack);
-
-        return () => {
-            socket.off('live_feed_update', handleNewAttack);
-        };
-    }, []);
-
+    // Auto-scroll to bottom whenever the logs prop updates
     useEffect(() => {
         if (scrollRef.current) {
             scrollRef.current.scrollTo({

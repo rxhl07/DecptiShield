@@ -18,7 +18,6 @@ function scoreLabel(score: number) {
     return 'LOW';
 }
 
-// --- Terminal Window Wrapper Component ---
 function TerminalWindow({ title, path, children, delay = 0, className = '' }: { title: string, path: string, children: React.ReactNode, delay?: number, className?: string }) {
     return (
         <motion.div
@@ -41,7 +40,6 @@ function TerminalWindow({ title, path, children, delay = 0, className = '' }: { 
     );
 }
 
-// --- High-End Threat Ring Component ---
 function ModernThreatRing({ score }: { score: number }) {
     const radius = 50;
     const circumference = 2 * Math.PI * radius;
@@ -51,13 +49,8 @@ function ModernThreatRing({ score }: { score: number }) {
     return (
         <div className="relative flex items-center justify-center w-48 h-48">
             <svg width="192" height="192" className="rotate-[-90deg] drop-shadow-2xl">
-                {/* Background track */}
                 <circle cx="96" cy="96" r={radius} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
-
-                {/* Active dashed inner accent */}
                 <circle cx="96" cy="96" r={radius - 12} fill="none" stroke={`${color}44`} strokeWidth="1" strokeDasharray="4 6" className="animate-[spin_12s_linear_infinite]" />
-
-                {/* Glowing Progress Arc */}
                 <motion.circle
                     initial={{ strokeDasharray: `0 ${circumference}` }}
                     animate={{ strokeDasharray: `${dash} ${circumference}` }}
@@ -67,7 +60,6 @@ function ModernThreatRing({ score }: { score: number }) {
                 />
             </svg>
 
-            {/* Centered Readout */}
             <div className="absolute inset-0 flex flex-col items-center justify-center mt-1">
                 <span className="font-black text-6xl tracking-tighter text-white">{score}</span>
                 <span className="text-[10px] font-mono tracking-widest mt-1 uppercase" style={{ color }}>
@@ -78,27 +70,42 @@ function ModernThreatRing({ score }: { score: number }) {
     );
 }
 
-// --- Main Dashboard ---
 export default function Dashboard() {
     const [elapsed, setElapsed] = useState(0);
     const [threatScore, setThreatScore] = useState(0);
-    const [attackerIp, setAttackerIp] = useState("AWAITING CONNECTION...");
 
-    // Uptime counter
+    // NEW: profile state now includes ISP 
+    const [profile, setProfile] = useState({ ip: 'AWAITING...', geo: 'UNKNOWN', isp: 'WAITING', type: 'WAITING FOR CONNECTION' });
+    const [sessionLogs, setSessionLogs] = useState<any[]>([]);
+
     useEffect(() => {
         const iv = setInterval(() => setElapsed((s) => s + 1), 1000);
         return () => clearInterval(iv);
     }, []);
 
-    // LIVE SOCKET LISTENER: Updates Threat Score and Attacker IP on new events
     useEffect(() => {
-        const handleThreatUpdate = (data: any) => {
-            setThreatScore(data.threatScore);
-            setAttackerIp("127.0.0.1 (ACTIVE DETECTED)");
-        };
+        socket.on('session_profile_update', (data) => {
+            setProfile(data);
+            setSessionLogs([]);
+        });
 
-        socket.on('live_feed_update', handleThreatUpdate);
-        return () => { socket.off('live_feed_update', handleThreatUpdate); };
+        socket.on('live_feed_update', (data) => {
+            setThreatScore(data.threatScore);
+
+            const newLog = {
+                id: data.sessionId + '-' + Date.now(),
+                timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+                command: data.command,
+                risk: data.severity,
+                score: data.threatScore
+            };
+            setSessionLogs((prev) => [...prev, newLog]);
+        });
+
+        return () => {
+            socket.off('session_profile_update');
+            socket.off('live_feed_update');
+        };
     }, []);
 
     const fmtElapsed = (s: number) => {
@@ -111,10 +118,8 @@ export default function Dashboard() {
     return (
         <div className="min-h-screen w-full bg-[#020202] text-slate-300 relative pb-20 selection:bg-[#2D5BFF]/30">
 
-            {/* Subtle Scanline Background Overlay */}
             <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(255,255,255,0)_50%,rgba(0,0,0,1)_50%)] bg-[length:100%_4px] z-0" />
 
-            {/* Global Terminal Header */}
             <header className="relative z-20 border-b border-white/10 bg-[#050505] px-8 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-4">
                     <ShieldAlert size={18} className="text-[#EF4444] animate-pulse" />
@@ -126,13 +131,10 @@ export default function Dashboard() {
                 </div>
             </header>
 
-            {/* FIXED ASYMMETRICAL TERMINAL GRID */}
             <main className="relative z-10 max-w-[1600px] mx-auto p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
 
-                {/* LEFT COLUMN (8/12) */}
                 <div className="lg:col-span-8 flex flex-col gap-8">
 
-                    {/* Target Box */}
                     <TerminalWindow title="Active_Intercept" path="~/deceptishield/targets/active.yml" delay={0.1}>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 font-mono">
                             <div className="p-6 bg-white/[0.02] border border-white/5 rounded">
@@ -144,17 +146,18 @@ export default function Dashboard() {
                                 </div>
                             </div>
                             <div className="p-6 bg-red-500/[0.02] border border-red-500/10 rounded">
-                                <p className="text-[10px] text-slate-500 mb-4">ADVERSARY_METADATA:</p>
+                                <p className="text-[10px] text-slate-500 mb-4">ADVERSARY_METADATA (OSINT):</p>
                                 <div className="space-y-2 text-sm">
-                                    <p><span className="text-red-400">ip_address:</span> <span className={`${attackerIp.includes("ACTIVE") ? "text-red-500 animate-pulse" : "text-white"}`}>{attackerIp}</span></p>
-                                    <p><span className="text-red-400">geo_location:</span> <span className="text-slate-300">TOR EXIT NODE</span></p>
-                                    <p><span className="text-red-400">connection:</span> <span className={`${attackerIp.includes("ACTIVE") ? "text-red-500 animate-pulse" : "text-slate-500"}`}>{attackerIp.includes("ACTIVE") ? "ESTABLISHED" : "WAITING"}</span></p>
+                                    <p><span className="text-red-400">ip_address:</span> <span className={`${profile.ip.includes("AWAIT") ? "text-slate-500 animate-pulse" : "text-white"}`}>{profile.ip}</span></p>
+                                    <p><span className="text-red-400">geo_location:</span> <span className="text-slate-300">{profile.geo}</span></p>
+                                    {/* NEW ISP FIELD */}
+                                    <p><span className="text-red-400">isp_provider:</span> <span className="text-slate-300">{profile.isp}</span></p>
+                                    <p><span className="text-red-400">connection:</span> <span className={`${profile.ip.includes("AWAIT") ? "text-slate-500" : "text-red-500 animate-pulse"}`}>{profile.type}</span></p>
                                 </div>
                             </div>
                         </div>
                     </TerminalWindow>
 
-                    {/* Attack Narrative */}
                     <TerminalWindow title="Attack_Narrative" path="/var/log/deceptishield/syslog" delay={0.2}>
                         <div className="space-y-5 font-mono text-sm relative">
                             <div className="absolute left-[31px] top-2 bottom-2 w-[1px] bg-white/10" />
@@ -175,29 +178,22 @@ export default function Dashboard() {
                         </div>
                     </TerminalWindow>
 
-                    {/* Live Feed */}
                     <TerminalWindow title="Live_Feed.exe" path="~/deceptishield/stream/tty" delay={0.3} className="min-h-[400px]">
-                        <LiveFeed />
+                        <LiveFeed logs={sessionLogs} />
                     </TerminalWindow>
                 </div>
 
-                {/* RIGHT COLUMN (4/12) */}
                 <div className="lg:col-span-4 flex flex-col gap-8">
 
-                    {/* ML Score - Clean Terminal Variant */}
                     <TerminalWindow title="Threat_Analyzer" path="./ml_engine/score.py" delay={0.4}>
                         <div className="flex-1 flex flex-col items-center justify-between h-full w-full pb-4">
 
-                            {/* Main Score Visualization */}
                             <div className="flex-1 flex flex-col items-center justify-center">
-                                {/* DYNAMIC SCORE PASSED HERE */}
                                 <ModernThreatRing score={threatScore} />
                             </div>
 
-                            {/* Data Vectors - Terminal Stream Style */}
                             <div className="w-full space-y-6 px-4">
 
-                                {/* Vector 1 */}
                                 <div>
                                     <div className="flex justify-between font-mono text-[10px] uppercase tracking-widest mb-3">
                                         <span className="text-slate-400">Lateral_Mvmt</span>
@@ -216,7 +212,6 @@ export default function Dashboard() {
                                     </div>
                                 </div>
 
-                                {/* Vector 2 */}
                                 <div>
                                     <div className="flex justify-between font-mono text-[10px] uppercase tracking-widest mb-3">
                                         <span className="text-slate-400">Priv_Escalation</span>
@@ -239,9 +234,8 @@ export default function Dashboard() {
                         </div>
                     </TerminalWindow>
 
-                    {/* Blockchain Forensic Button */}
                     <TerminalWindow title="Ledger_Mint" path="sepolia://smart-contract/execute" delay={0.5}>
-                        <ReportButton />
+                        <ReportButton logs={sessionLogs} profile={profile} />
                     </TerminalWindow>
 
                 </div>

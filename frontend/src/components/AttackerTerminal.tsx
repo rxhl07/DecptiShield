@@ -6,6 +6,13 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { socket } from '../socket';
 
+const FAKE_PROFILES = [
+    { ip: "185.220.101.47", type: "TOR EXIT NODE" }, // Real German Tor Node
+    { ip: "194.126.177.81", type: "BULLETPROOF HOSTING" }, // Real Russian IP
+    { ip: "45.133.192.12", type: "STATE SPONSORED THREAT" },
+    { ip: "103.22.16.90", type: "KNOWN BOTNET C2" } // Real Chinese IP
+];
+
 export default function AttackerTerminal() {
     const terminalRef = useRef<HTMLDivElement>(null);
     const navigate = useNavigate();
@@ -13,7 +20,10 @@ export default function AttackerTerminal() {
     useEffect(() => {
         if (!terminalRef.current) return;
 
-        // 1. Initialize Terminal
+        // --- ANTI-GHOST TERMINAL FIX ---
+        // Clears the DOM to prevent React Strict Mode from attaching two listeners
+        terminalRef.current.innerHTML = '';
+
         const term = new Terminal({
             theme: { background: '#050505', foreground: '#10B981', cursor: '#10B981' },
             fontFamily: '"Fira Code", monospace',
@@ -25,96 +35,114 @@ export default function AttackerTerminal() {
         term.loadAddon(fitAddon);
         term.open(terminalRef.current);
         fitAddon.fit();
-
-        // 2. Connect to Python FastAPI Backend
         socket.connect();
 
-        const prompt = '\r\nubuntu@prod-db-01:~$ ';
+        let state: 'LOCAL' | 'PASSWORD' | 'REMOTE' = 'LOCAL';
+        const localPrompt = '\r\n\x1b[1;31mroot@kali\x1b[0m:\x1b[1;34m~\x1b[0m$ ';
+        const remotePrompt = '\r\nubuntu@prod-db-01:~$ ';
+
         let commandBuffer = '';
         let isProcessing = false;
 
-        // Boot Sequence
-        term.writeln('\x1b[1;32mInitializing connection to target...\x1b[0m');
-        setTimeout(() => {
-            term.writeln('\x1b[1;32mConnection established.\x1b[0m');
-            term.write(prompt);
-        }, 800);
+        term.write(localPrompt);
 
-        // 3. Handle User Input (The Buffer)
-        term.onData((data) => {
-            if (isProcessing) return; // Lock terminal while waiting for Llama 3
-
-            const char = data;
-
-            if (char === '\r') {
-                // ENTER KEY PRESSED
-                if (commandBuffer.trim() === '') {
-                    term.write(prompt);
-                    return;
+        // COPY HANDLER ONLY
+        term.attachCustomKeyEventHandler((e) => {
+            if (e.ctrlKey && e.code === 'KeyC' && e.type === 'keydown') {
+                const selection = term.getSelection();
+                if (selection) {
+                    navigator.clipboard.writeText(selection);
+                    return false;
                 }
+            }
+            return true;
+        });
 
-                term.write('\r\n');
-                isProcessing = true;
+        term.onData((data) => {
+            if (isProcessing) return;
 
-                // Emit to Python backend
-                socket.emit('execute_command', { command: commandBuffer });
+            // --- THE BULLETPROOF INPUT PROCESSOR ---
+            // Processes text character-by-character to perfectly handle large pasted strings
+            for (let i = 0; i < data.length; i++) {
+                const char = data[i];
 
-                // --- HACKATHON FALLBACK ---
-                // If your backend isn't running yet, simulate a response locally
-                if (!socket.connected) {
-                    setTimeout(() => {
-                        const cmd = commandBuffer.trim().toLowerCase();
-                        let fakeOutput = `bash: ${cmd}: command not found`;
+                if (char === '\r' || char === '\n') { // ENTER KEY OR PASTED NEWLINE
+                    term.write('\r\n');
+                    const cmd = commandBuffer.trim();
+                    commandBuffer = '';
 
-                        if (cmd === 'whoami') fakeOutput = 'root';
-                        if (cmd === 'ls -la' || cmd === 'ls') fakeOutput = 'drwxr-xr-x 4 root root 4096 Apr 22 12:00 .\r\ndrwxr-xr-x 1 root root 4096 Apr 22 12:00 ..\r\n-rw-r--r-- 1 root root 312 Apr 22 12:00 .bashrc\r\n-rw-r--r-- 1 root root 1024 Apr 22 12:01 secure_keys.pem';
-                        if (cmd.startsWith('cat /etc/passwd')) fakeOutput = 'root:x:0:0:root:/root:/bin/bash\r\nsshd:x:100:65534::/run/sshd:/usr/sbin/nologin\r\nubuntu:x:1000:1000:Ubuntu,,,:/home/ubuntu:/bin/bash';
+                    if (state === 'LOCAL') {
+                        if (cmd.includes('ssh')) {
+                            term.write('admin@192.168.1.100\'s password: ');
+                            state = 'PASSWORD';
+                        } else if (cmd === '') {
+                            term.write(localPrompt);
+                        } else {
+                            term.writeln(`bash: ${cmd}: command not found`);
+                            term.write(localPrompt);
+                        }
+                        continue;
+                    }
+
+                    if (state === 'PASSWORD') {
+                        isProcessing = true;
+                        setTimeout(() => {
+                            term.writeln('\x1b[1;32mWelcome to Ubuntu 22.04 LTS (GNU/Linux 5.15.0-76-generic x86_64)\x1b[0m');
+                            term.writeln(' * Documentation:  https://help.ubuntu.com');
+                            term.writeln(' * Management:     https://landscape.canonical.com');
+                            term.writeln(' * Support:        https://ubuntu.com/advantage');
+                            term.write(remotePrompt);
+
+                            state = 'REMOTE';
+                            isProcessing = false;
+
+                            const randomProfile = FAKE_PROFILES[Math.floor(Math.random() * FAKE_PROFILES.length)];
+                            socket.emit('session_start', randomProfile);
+                        }, 800);
+                        continue;
+                    }
+
+                    if (state === 'REMOTE') {
+                        if (cmd === '') {
+                            term.write(remotePrompt);
+                            continue;
+                        }
                         if (cmd === 'clear') {
                             term.clear();
-                            term.write(prompt);
-                            commandBuffer = '';
-                            isProcessing = false;
-                            return;
+                            term.write(remotePrompt);
+                            continue;
+                        }
+                        if (cmd === 'exit' || cmd === 'logout') {
+                            term.writeln('logout');
+                            term.writeln('Connection to 192.168.1.100 closed.');
+                            state = 'LOCAL';
+                            term.write(localPrompt);
+                            continue;
                         }
 
-                        // Write the fake output
-                        const lines = fakeOutput.split('\n');
-                        lines.forEach((line) => term.writeln(line.replace('\r', '')));
+                        isProcessing = true;
+                        socket.emit('execute_command', { command: cmd });
+                    }
 
-                        term.write(prompt);
-                        commandBuffer = '';
-                        isProcessing = false;
-                    }, 600);
-                } else {
-                    // Clear buffer if connected to real backend
-                    commandBuffer = '';
+                } else if (char === '\x7F' || char === '\b') { // BACKSPACE
+                    if (commandBuffer.length > 0) {
+                        commandBuffer = commandBuffer.slice(0, -1);
+                        if (state !== 'PASSWORD') term.write('\b \b');
+                    }
+                } else { // REGULAR TYPING OR PASTING
+                    commandBuffer += char;
+                    if (state !== 'PASSWORD') term.write(char);
                 }
-                // ---------------------------
-
-            } else if (char === '\x7F') {
-                // BACKSPACE KEY PRESSED
-                if (commandBuffer.length > 0) {
-                    commandBuffer = commandBuffer.slice(0, -1);
-                    term.write('\b \b'); // Move back, write space, move back again
-                }
-            } else {
-                // REGULAR TYPING
-                commandBuffer += char;
-                term.write(char);
             }
         });
 
-        // 4. Listen for Real Llama 3 Responses
         socket.on('terminal_response', (data) => {
-            // Split the string by newline so xterm formats it correctly
             const lines = data.output.split('\n');
             lines.forEach((line: string) => term.writeln(line.replace('\r', '')));
-
-            term.write(prompt);
+            term.write(remotePrompt);
             isProcessing = false;
         });
 
-        // Resize listener
         const handleResize = () => fitAddon.fit();
         window.addEventListener('resize', handleResize);
 
