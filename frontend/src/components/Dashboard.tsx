@@ -3,14 +3,9 @@ import { motion } from 'framer-motion';
 import { TerminalSquare, ShieldAlert } from 'lucide-react';
 import LiveFeed from './LiveFeed';
 import ReportButton from './ReportButton';
+import { socket } from '../socket';
 
 // --- Helper Functions & Data ---
-const SESSION = {
-    target: 'ubuntu@prod-db-01',
-    attackerIp: '185.220.101.47',
-    threatScore: 87,
-};
-
 function scoreColor(score: number) {
     if (score >= 80) return '#EF4444';
     if (score >= 55) return '#F59E0B';
@@ -86,10 +81,24 @@ function ModernThreatRing({ score }: { score: number }) {
 // --- Main Dashboard ---
 export default function Dashboard() {
     const [elapsed, setElapsed] = useState(0);
+    const [threatScore, setThreatScore] = useState(0);
+    const [attackerIp, setAttackerIp] = useState("AWAITING CONNECTION...");
 
+    // Uptime counter
     useEffect(() => {
         const iv = setInterval(() => setElapsed((s) => s + 1), 1000);
         return () => clearInterval(iv);
+    }, []);
+
+    // LIVE SOCKET LISTENER: Updates Threat Score and Attacker IP on new events
+    useEffect(() => {
+        const handleThreatUpdate = (data: any) => {
+            setThreatScore(data.threatScore);
+            setAttackerIp("127.0.0.1 (ACTIVE DETECTED)");
+        };
+
+        socket.on('live_feed_update', handleThreatUpdate);
+        return () => { socket.off('live_feed_update', handleThreatUpdate); };
     }, []);
 
     const fmtElapsed = (s: number) => {
@@ -137,9 +146,9 @@ export default function Dashboard() {
                             <div className="p-6 bg-red-500/[0.02] border border-red-500/10 rounded">
                                 <p className="text-[10px] text-slate-500 mb-4">ADVERSARY_METADATA:</p>
                                 <div className="space-y-2 text-sm">
-                                    <p><span className="text-red-400">ip_address:</span> <span className="text-white">185.220.101.47</span></p>
+                                    <p><span className="text-red-400">ip_address:</span> <span className={`${attackerIp.includes("ACTIVE") ? "text-red-500 animate-pulse" : "text-white"}`}>{attackerIp}</span></p>
                                     <p><span className="text-red-400">geo_location:</span> <span className="text-slate-300">TOR EXIT NODE</span></p>
-                                    <p><span className="text-red-400">connection:</span> <span className="text-red-500 animate-pulse">ESTABLISHED</span></p>
+                                    <p><span className="text-red-400">connection:</span> <span className={`${attackerIp.includes("ACTIVE") ? "text-red-500 animate-pulse" : "text-slate-500"}`}>{attackerIp.includes("ACTIVE") ? "ESTABLISHED" : "WAITING"}</span></p>
                                 </div>
                             </div>
                         </div>
@@ -181,7 +190,8 @@ export default function Dashboard() {
 
                             {/* Main Score Visualization */}
                             <div className="flex-1 flex flex-col items-center justify-center">
-                                <ModernThreatRing score={SESSION.threatScore} />
+                                {/* DYNAMIC SCORE PASSED HERE */}
+                                <ModernThreatRing score={threatScore} />
                             </div>
 
                             {/* Data Vectors - Terminal Stream Style */}

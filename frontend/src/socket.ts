@@ -1,8 +1,9 @@
 import { io } from 'socket.io-client';
 
-// This should match the port your FastAPI backend is running on
-const SOCKET_URL = 'http://localhost:5000';
+// Point this to your FastAPI backend port
+const BACKEND_URL = "http://localhost:8000";
 
-export const socket = io(SOCKET_URL, {
-    autoConnect: false, // We only connect when the terminal is opened
+export const socket = io(BACKEND_URL, {
+    autoConnect: true,
+    reconnection: true,
 });
