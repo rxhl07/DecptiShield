@@ -5,7 +5,6 @@ import LiveFeed from './LiveFeed';
 import ReportButton from './ReportButton';
 import { socket } from '../socket';
 
-// --- Helper Functions & Data ---
 function scoreColor(score: number) {
     if (score >= 80) return '#EF4444';
     if (score >= 55) return '#F59E0B';
@@ -73,8 +72,6 @@ function ModernThreatRing({ score }: { score: number }) {
 export default function Dashboard() {
     const [elapsed, setElapsed] = useState(0);
     const [threatScore, setThreatScore] = useState(0);
-
-    // NEW: profile state now includes ISP 
     const [profile, setProfile] = useState({ ip: 'AWAITING...', geo: 'UNKNOWN', isp: 'WAITING', type: 'WAITING FOR CONNECTION' });
     const [sessionLogs, setSessionLogs] = useState<any[]>([]);
 
@@ -84,6 +81,16 @@ export default function Dashboard() {
     }, []);
 
     useEffect(() => {
+        // Fetch current active profile immediately on component mount
+        fetch('http://localhost:8000/api/profile')
+            .then((res) => res.json())
+            .then((data) => {
+                if (data && data.ip) {
+                    setProfile(data);
+                }
+            })
+            .catch(() => { });
+
         socket.on('session_profile_update', (data) => {
             setProfile(data);
             setSessionLogs([]);
@@ -117,7 +124,6 @@ export default function Dashboard() {
 
     return (
         <div className="min-h-screen w-full bg-[#020202] text-slate-300 relative pb-20 selection:bg-[#2D5BFF]/30">
-
             <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(255,255,255,0)_50%,rgba(0,0,0,1)_50%)] bg-[length:100%_4px] z-0" />
 
             <header className="relative z-20 border-b border-white/10 bg-[#050505] px-8 py-4 flex items-center justify-between">
@@ -132,9 +138,7 @@ export default function Dashboard() {
             </header>
 
             <main className="relative z-10 max-w-[1600px] mx-auto p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-
                 <div className="lg:col-span-8 flex flex-col gap-8">
-
                     <TerminalWindow title="Active_Intercept" path="~/deceptishield/targets/active.yml" delay={0.1}>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 font-mono">
                             <div className="p-6 bg-white/[0.02] border border-white/5 rounded">
@@ -150,7 +154,6 @@ export default function Dashboard() {
                                 <div className="space-y-2 text-sm">
                                     <p><span className="text-red-400">ip_address:</span> <span className={`${profile.ip.includes("AWAIT") ? "text-slate-500 animate-pulse" : "text-white"}`}>{profile.ip}</span></p>
                                     <p><span className="text-red-400">geo_location:</span> <span className="text-slate-300">{profile.geo}</span></p>
-                                    {/* NEW ISP FIELD */}
                                     <p><span className="text-red-400">isp_provider:</span> <span className="text-slate-300">{profile.isp}</span></p>
                                     <p><span className="text-red-400">connection:</span> <span className={`${profile.ip.includes("AWAIT") ? "text-slate-500" : "text-red-500 animate-pulse"}`}>{profile.type}</span></p>
                                 </div>
@@ -184,16 +187,13 @@ export default function Dashboard() {
                 </div>
 
                 <div className="lg:col-span-4 flex flex-col gap-8">
-
                     <TerminalWindow title="Threat_Analyzer" path="./ml_engine/score.py" delay={0.4}>
                         <div className="flex-1 flex flex-col items-center justify-between h-full w-full pb-4">
-
                             <div className="flex-1 flex flex-col items-center justify-center">
                                 <ModernThreatRing score={threatScore} />
                             </div>
 
                             <div className="w-full space-y-6 px-4">
-
                                 <div>
                                     <div className="flex justify-between font-mono text-[10px] uppercase tracking-widest mb-3">
                                         <span className="text-slate-400">Lateral_Mvmt</span>
@@ -229,7 +229,6 @@ export default function Dashboard() {
                                         />
                                     </div>
                                 </div>
-
                             </div>
                         </div>
                     </TerminalWindow>
@@ -237,7 +236,6 @@ export default function Dashboard() {
                     <TerminalWindow title="Ledger_Mint" path="sepolia://smart-contract/execute" delay={0.5}>
                         <ReportButton logs={sessionLogs} profile={profile} />
                     </TerminalWindow>
-
                 </div>
             </main>
         </div>
