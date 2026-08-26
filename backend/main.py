@@ -2,10 +2,18 @@ from fastapi import FastAPI, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 from socketio_server import sio
-import config 
+import config
 from pydantic import BaseModel
 import httpx
 import uuid
+import sys
+from pathlib import Path
+
+# The command engine lives at the repo root so the SSH honeypot can import the
+# same module -- both entry points must agree on how commands behave.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared import command_engine
+from shared.command_engine import VirtualFileSystem
 
 # Initialize the FastAPI app
 app = FastAPI(title="DeceptiShield API", version="1.0 (MVP)")
@@ -27,71 +35,8 @@ class TelemetryData(BaseModel):
     threatScore: int
     severity: str
 
-# ---------------------------------------------------------
-# VIRTUAL FILE SYSTEM (VFS) STATE MANAGER
-# ---------------------------------------------------------
-class VirtualFileSystem:
-    def __init__(self):
-        self.cwd = "/home/ubuntu"
-        self.created_files = []
-        self.deleted_files = []
-        self.total_threat_score = 0
-        self.command_count = 0
-
-    def process_command(self, command):
-        cmd = command.strip()
-        parts = cmd.split()
-        if not parts:
-            return
-        
-        base = parts[0]
-        
-        if base == "cd":
-            if len(parts) == 1 or parts[1] == "~":
-                self.cwd = "/home/ubuntu"
-            elif parts[1] == "..":
-                if self.cwd != "/":
-                    self.cwd = "/".join(self.cwd.split("/")[:-1])
-                    if self.cwd == "":
-                        self.cwd = "/"
-            elif parts[1] == "/":
-                self.cwd = "/"
-            elif parts[1].startswith("/"):
-                self.cwd = parts[1]
-            else:
-                self.cwd = self.cwd + "/" + parts[1] if self.cwd != "/" else "/" + parts[1]
-                
-        elif base in ["touch", "mkdir", "nano", "vim"]:
-            for f in parts[1:]:
-                if not f.startswith("-"):
-                    new_file = f"{self.cwd}/{f}".replace("//", "/")
-                    if new_file not in self.created_files:
-                        self.created_files.append(new_file)
-                        
-        elif base in ["rm", "rmdir"]:
-            for f in parts[1:]:
-                if not f.startswith("-"):
-                    del_file = f"{self.cwd}/{f}".replace("//", "/")
-                    self.deleted_files.append(del_file)
-                    if del_file in self.created_files:
-                        self.created_files.remove(del_file)
-
-    def add_score(self, score):
-        self.total_threat_score += score
-        self.command_count += 1
-
-    def get_average_score(self):
-        if self.command_count == 0:
-            return 0
-        return int(self.total_threat_score / self.command_count)
-
-    def get_context_string(self):
-        ctx = f"Current Working Directory: {self.cwd}\n"
-        if self.created_files:
-            ctx += f"Files created by user: {', '.join(self.created_files)}\n"
-        if self.deleted_files:
-            ctx += f"Files deleted by user: {', '.join(self.deleted_files)}\n"
-        return ctx
+# VirtualFileSystem now lives in shared/command_engine.py so the SSH honeypot
+# shares the same session state model.
 
 active_sessions = {}
 
@@ -133,6 +78,28 @@ async def receive_honeypot_data(data: TelemetryData):
     await sio.emit('live_feed_update', data.dict())
     return {"status": "broadcast_complete"}
 
+
+@app.post("/internal/session_start")
+async def receive_session_start(data: dict = Body(...)):
+    """
+    A real SSH session opened on the honeypot. Enrich the IP and push it to the
+    dashboard's attacker-profile card -- the SSH path previously never sent
+    this, so that panel only ever populated from the browser terminal.
+    """
+    ip = data.get("ip")
+    enriched = await get_osint_data(ip)
+    if enriched:
+        data["geo"] = enriched["geo"]
+        data["isp"] = enriched["isp"]
+        data["org"] = enriched["org"]
+    else:
+        data.setdefault("geo", "UNKNOWN LOCATION")
+        data.setdefault("isp", "UNKNOWN ISP")
+
+    print(f"[OSINT] SSH session from {ip}: {data.get('geo')} via {data.get('isp')}")
+    await sio.emit('session_profile_update', data)
+    return {"status": "profile_broadcast"}
+
 @sio.on('connect')
 async def handle_connect(sid, environ):
     active_sessions[sid] = VirtualFileSystem()
@@ -162,6 +129,28 @@ async def handle_session_start(sid, data):
     print(f"[OSINT] Profile Unmasked: {data.get('geo')} via {data.get('isp')}")
     await sio.emit('session_profile_update', data)
 
+def _to_terminal(text):
+    """
+    xterm needs CRLF line endings. No trailing newline and empty stays empty --
+    the client decides line breaks, otherwise silent commands produce blank
+    lines instead of nothing.
+    """
+    if not text:
+        return ""
+    return text.replace("\r\n", "\n").replace("\n", "\r\n")
+
+
+# Reused across requests so we don't pay a new TCP+TLS handshake per command.
+_llm_client = None
+
+
+def _get_llm_client():
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = httpx.AsyncClient(timeout=60.0)
+    return _llm_client
+
+
 @sio.on('execute_command')
 async def handle_web_terminal_command(sid, data):
     command = data.get("command", "").strip()
@@ -172,50 +161,60 @@ async def handle_web_terminal_command(sid, data):
         vfs = VirtualFileSystem()
         active_sessions[sid] = vfs
         
-    vfs.process_command(command)
-    
+    vfs.record(command)
+
     current_cmd_score = 10
     if any(x in cmd_lower for x in ["sudo", "rm", "wget", "curl", "chmod", "chown"]):
         current_cmd_score = 90
     elif any(x in cmd_lower for x in ["cat", "ls", "cd", "find", "grep"]):
         current_cmd_score = 40
-    
+
     vfs.add_score(current_cmd_score)
     session_avg_score = vfs.get_average_score()
 
-    instant_responses = {
-        "whoami": "ubuntu",
-        "pwd": vfs.cwd,
-        "id": "uid=1000(ubuntu) gid=1000(ubuntu) groups=1000(ubuntu),4(adm),27(sudo)",
-        "uname -a": "Linux prod-db-01 5.15.0-76-generic #83-Ubuntu SMP Wed Jun 21 20:23:31 UTC 2023 x86_64 GNU/Linux",
-        "uname": "Linux",
-        "hostname": "prod-db-01",
-        "date": "Fri Apr 24 11:30:50 UTC 2026",
-    }
+    # Tiered dispatch. The engine updates VFS state itself and only hands back
+    # needs_llm for commands that genuinely require invention -- roughly one in
+    # twenty in practice, so most commands answer in well under a millisecond.
+    result = command_engine.handle_command(command, vfs)
 
-    ai_text = ""
-    
-    if cmd_lower.startswith("cd "):
-        ai_text = ""
-        await sio.emit('terminal_response', {'output': "\r\n"}, to=sid)
-    elif cmd_lower in instant_responses:
-        ai_text = instant_responses[cmd_lower] + "\r\n"
-        await sio.emit('terminal_response', {'output': ai_text}, to=sid)
+    if result.intel:
+        print(f"[INTEL] {sid}: {result.intel}")
+
+    if not result.needs_llm:
+        ai_text = result.output
+        await sio.emit('terminal_response',
+                       {'output': _to_terminal(ai_text), 'cwd': vfs.cwd}, to=sid)
     else:
-        memory_context = vfs.get_context_string()
         payload = {
-            "model": "llama3", 
-            "prompt": f"You are a vulnerable Ubuntu Linux server. {memory_context}\nThe user typed: {command}. Respond with ONLY the exact terminal output. Do not explain anything. If the command lists files (like ls), YOU MUST include the 'Files created by user' in your output, and DO NOT display 'Files deleted by user'.",
-            "stream": False
+            "model": config.OLLAMA_MODEL,
+            "messages": command_engine.build_messages(command, vfs),
+            "stream": False,
+            "keep_alive": -1,
+            "options": {"num_predict": 256, "temperature": 0.4},
         }
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post("http://localhost:11434/api/generate", json=payload)
-                ai_text = response.json().get("response", "bash: command not found")
-                await sio.emit('terminal_response', {'output': ai_text}, to=sid)
+            response = await _get_llm_client().post(
+                command_engine.chat_url(config.OLLAMA_URL), json=payload)
+            ai_text = response.json().get("message", {}).get("content", "")
+            ai_text = command_engine.sanitize_llm_output(ai_text)
+            # Reject output that contradicts state we know to be true, or that
+            # came back empty because the model broke character.
+            validated = command_engine.validate_against_state(ai_text, command, vfs)
+            if validated is None:
+                print(f"[Validation] rejected model output for: {command}")
+                ai_text = command_engine.fallback_output(command)
+            else:
+                ai_text = validated
+                # Remember it, so asking again gives the same answer.
+                command_engine.remember_llm_output(command, ai_text, vfs)
+            await sio.emit('terminal_response',
+                           {'output': _to_terminal(ai_text), 'cwd': vfs.cwd}, to=sid)
         except Exception as e:
-            ai_text = "bash: connection to host failed\r\n"
-            await sio.emit('terminal_response', {'output': ai_text}, to=sid)
+            # Degrade to a plausible shell rather than showing an error string.
+            print(f"[AI Error] {e}")
+            ai_text = command_engine.fallback_output(command)
+            await sio.emit('terminal_response',
+                       {'output': _to_terminal(ai_text), 'cwd': vfs.cwd}, to=sid)
 
     dashboard_data = {
         "sessionId": f"WEB-{str(uuid.uuid4())[:6]}",

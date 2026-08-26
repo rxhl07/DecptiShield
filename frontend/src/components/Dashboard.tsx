@@ -84,6 +84,10 @@ export default function Dashboard() {
     }, []);
 
     useEffect(() => {
+        // Reconnect if a previous view disconnected the shared socket. No-op
+        // when already connected, so this is safe on every mount.
+        if (!socket.connected) socket.connect();
+
         socket.on('session_profile_update', (data) => {
             setProfile(data);
             setSessionLogs([]);

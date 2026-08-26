@@ -1,58 +1,68 @@
-import httpx
-import json
 import sys
-import os
+from pathlib import Path
 
-# Import our config from the backend folder to get the URL
-# Since honeypot is a separate folder, we'll point to the URL directly for now 
-# or you can use your .env loader logic.
-OLLAMA_URL = "http://localhost:11434/api/generate"
+import httpx
 
-async def get_ai_response(command: str, persona_context: str):
+import config
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared import command_engine
+
+
+# One client for the whole process, so we reuse the connection pool instead of
+# paying a fresh TCP+TLS handshake on every command. Matters most when Ollama
+# is on another machine.
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=30.0)
+    return _client
+
+
+async def get_ai_response(command, persona_context, vfs=None):
     """
-    Sends the attacker's command to Llama 3 and gets a hallucinated terminal output.
+    Ask the model for one command's output. Returns raw text -- the caller is
+    responsible for sanitising and validating it.
     """
-    
-    # The System Prompt is the most important part. 
-    # It forces the AI to stay in character.
-    system_prompt = f"""
-    You are a professional Linux System Administrator for a high-security production server.
-    Current Persona: {persona_context}
-    
-    Rules:
-    1. Act ONLY as a Linux terminal. 
-    2. Do NOT provide explanations, apologies, or conversational text.
-    3. If a command is successful, show the standard Linux output.
-    4. If a command is malicious (like rm -rf /), simulate the result realistically or show a permission denied error.
-    5. Keep responses concise and technical.
-    6. Your hostname is 'prod-db-01' and current user is 'admin'.
-    """
+    if vfs is None:
+        vfs = command_engine.VirtualFileSystem()
 
     payload = {
-        "model": "llama3",
-        "prompt": f"{system_prompt}\n\nAttacker Command: {command}",
-        "stream": False,  # Set to False for a simpler MVP response
+        "model": config.OLLAMA_MODEL,
+        "messages": command_engine.build_messages(command, vfs, persona_context),
+        "stream": False,
+        # Ollama unloads an idle model after ~5 minutes and the reload costs
+        # several seconds. -1 keeps it resident, which matters mid-demo.
+        "keep_alive": -1,
         "options": {
-            "temperature": 0.7 # A bit of creativity makes the 'hallucination' more realistic
-        }
+            "num_predict": 256,   # terminal output is short; don't let it ramble
+            "temperature": 0.4,
+        },
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(OLLAMA_URL, json=payload)
-            response.raise_for_status()
-            
-            result = response.json()
-            return result.get("response", "bash: command not found")
-            
+        response = await _get_client().post(
+            command_engine.chat_url(config.OLLAMA_URL), json=payload)
+        response.raise_for_status()
+        return response.json().get("message", {}).get("content", "")
     except Exception as e:
-        print(f"[AI Error] Could not connect to Ollama: {e}")
-        return f"sh: {command}: connection to AI backend lost"
+        # Return empty rather than an error string: the caller falls back to a
+        # deterministic response, so an unreachable model degrades quietly
+        # instead of announcing that this is a honeypot.
+        print(f"[AI Error] Could not reach Ollama at {config.OLLAMA_URL}: {e}")
+        return ""
 
-# Quick test block
+
+# Quick manual check: python ollama_client.py
 if __name__ == "__main__":
     import asyncio
-    test_cmd = "ls -la /etc/passwd"
+    from shared.command_engine import VirtualFileSystem
+
+    test_cmd = "cat /var/log/auth.log"
     print(f"Testing AI with command: {test_cmd}")
-    reply = asyncio.run(get_ai_response(test_cmd, "Ubuntu 22.04 Web Server"))
+    reply = asyncio.run(get_ai_response(test_cmd, "Ubuntu 22.04 Web Server",
+                                        VirtualFileSystem()))
     print(f"AI Output:\n{reply}")

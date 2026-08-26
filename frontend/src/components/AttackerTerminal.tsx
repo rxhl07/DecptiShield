@@ -38,8 +38,20 @@ export default function AttackerTerminal() {
         socket.connect();
 
         let state: 'LOCAL' | 'PASSWORD' | 'REMOTE' = 'LOCAL';
-        const localPrompt = '\r\n\x1b[1;31mroot@kali\x1b[0m:\x1b[1;34m~\x1b[0m$ ';
-        const remotePrompt = '\r\nubuntu@prod-db-01:~$ ';
+
+        // No leading newline: the caller has already moved to a fresh line, so
+        // a \r\n here produced a blank line before every prompt.
+        const localPrompt = '\x1b[1;31mroot@kali\x1b[0m:\x1b[1;34m~\x1b[0m$ ';
+
+        // The honeypot's working directory, mirrored from the server so the
+        // prompt reflects `cd` the way a real shell does.
+        let cwd = '/home/ubuntu';
+        const remotePrompt = () => {
+            const display = cwd.startsWith('/home/ubuntu')
+                ? '~' + cwd.slice('/home/ubuntu'.length)
+                : cwd;
+            return `ubuntu@prod-db-01:${display}$ `;
+        };
 
         let commandBuffer = '';
         let isProcessing = false;
@@ -78,7 +90,7 @@ export default function AttackerTerminal() {
                         } else if (cmd === '') {
                             term.write(localPrompt);
                         } else {
-                            term.writeln(`bash: ${cmd}: command not found`);
+                            term.writeln(`bash: ${cmd.split(" ")[0]}: command not found`);
                             term.write(localPrompt);
                         }
                         continue;
@@ -91,7 +103,7 @@ export default function AttackerTerminal() {
                             term.writeln(' * Documentation:  https://help.ubuntu.com');
                             term.writeln(' * Management:     https://landscape.canonical.com');
                             term.writeln(' * Support:        https://ubuntu.com/advantage');
-                            term.write(remotePrompt);
+                            term.write(remotePrompt());
 
                             state = 'REMOTE';
                             isProcessing = false;
@@ -104,12 +116,12 @@ export default function AttackerTerminal() {
 
                     if (state === 'REMOTE') {
                         if (cmd === '') {
-                            term.write(remotePrompt);
+                            term.write(remotePrompt());
                             continue;
                         }
                         if (cmd === 'clear') {
                             term.clear();
-                            term.write(remotePrompt);
+                            term.write(remotePrompt());
                             continue;
                         }
                         if (cmd === 'exit' || cmd === 'logout') {
@@ -137,9 +149,14 @@ export default function AttackerTerminal() {
         });
 
         socket.on('terminal_response', (data) => {
-            const lines = data.output.split('\n');
-            lines.forEach((line: string) => term.writeln(line.replace('\r', '')));
-            term.write(remotePrompt);
+            // Silent commands send an empty string -- writing a line anyway is
+            // what produced a blank gap after every `touch`, `cd` and `rm`.
+            if (data.output) {
+                data.output.split('\n').forEach((line: string) =>
+                    term.writeln(line.replace(/\r/g, '')));
+            }
+            if (data.cwd) cwd = data.cwd;
+            term.write(remotePrompt());
             isProcessing = false;
         });
 
@@ -149,7 +166,10 @@ export default function AttackerTerminal() {
         return () => {
             window.removeEventListener('resize', handleResize);
             socket.off('terminal_response');
-            socket.disconnect();
+            // Deliberately NOT disconnecting: `socket` is a shared singleton and
+            // socket.io does not auto-reconnect after an explicit disconnect, so
+            // tearing it down here left the Dashboard with a dead socket when
+            // navigating away via "Return to SOC".
             term.dispose();
         };
     }, []);
