@@ -3,13 +3,15 @@ from contextlib import asynccontextmanager
 import json
 import uuid
 import config
-from fastapi import FastAPI
+from typing import Optional
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from pydantic import BaseModel
 import socketio
 from socketio_server import sio
 from ssh_honeypot import start_ssh_honeypot
+import session_registry
 
 
 # --- APPLICATION LIFESPAN & SSH DAEMON ---
@@ -227,6 +229,19 @@ async def root():
 @app.get("/api/profile")
 async def get_current_profile():
   return latest_profile
+
+
+@app.get("/api/sessions")
+async def get_sessions():
+  return session_registry.list_sessions()
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session_detail(session_id: str):
+  detail = session_registry.get_session(session_id)
+  if detail is None:
+    raise HTTPException(status_code=404, detail="Session not found")
+  return detail
 
 
 @app.post("/internal/attacker-connected")
