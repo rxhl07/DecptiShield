@@ -86,27 +86,31 @@ export default function ReportButton({ logs, profile }: ReportProps) {
         }, 1500);
     };
 
+    const disabled = phase !== 'idle' || logs.length === 0;
+    const tone =
+        phase === 'done' ? 'border-ds-acc text-ds-acc'
+            : phase === 'loading' ? 'border-ds-line text-ds-dim'
+                : logs.length === 0 ? 'border-ds-line text-ds-faint'
+                    : 'border-ds-ink text-ds-ink hover:border-ds-acc hover:text-ds-acc';
+
     return (
-        <div className="flex flex-col h-full relative justify-center">
+        <div className="flex flex-col">
             <button
-                disabled={phase !== 'idle' || logs.length === 0}
+                disabled={disabled}
                 onClick={generatePDF}
-                className="w-full px-6 py-5 rounded-xl font-black text-sm tracking-widest uppercase transition-all duration-300 flex items-center justify-center gap-3 disabled:opacity-50"
-                style={{
-                    background: phase === 'loading' ? 'rgba(239,68,68,0.1)' : phase === 'done' ? 'rgba(16,185,129,0.15)' : '#EF4444',
-                    border: `1px solid ${phase === 'loading' ? 'rgba(239,68,68,0.3)' : phase === 'done' ? 'rgba(16,185,129,0.5)' : '#EF4444'}`,
-                    color: phase === 'done' ? '#10B981' : phase === 'loading' ? '#EF4444' : '#fff',
-                }}
+                className={`flex w-full items-center justify-between gap-3 border-2 bg-ds-bg px-4 py-3.5 text-left transition-colors enabled:cursor-pointer ${tone}`}
             >
-                {phase === 'loading' ? (
-                    <span className="animate-pulse flex items-center gap-2"><FileCode2 size={18} /> COMPILING FORENSICS...</span>
-                ) : phase === 'done' ? (
-                    <span className="flex items-center gap-2"><Download size={18} /> PDF DOWNLOADED</span>
-                ) : (
-                    <span className="flex items-center gap-2"><FileCode2 size={18} /> GENERATE FORENSIC PDF</span>
-                )}
+                <span className="flex items-center gap-2.5 text-[15px] font-bold uppercase tracking-[0.02em]">
+                    {phase === 'done' ? <Download size={16} /> : <FileCode2 size={16} />}
+                    {phase === 'loading' ? 'Building report…' : phase === 'done' ? 'PDF downloaded' : 'Export forensic PDF'}
+                </span>
+                <span className="font-mono text-[11px] tracking-[0.08em] text-ds-dim">
+                    {logs.length} CMD
+                </span>
             </button>
-            {logs.length === 0 && <p className="text-center text-[10px] text-slate-500 mt-3 font-mono">Awaiting session data to generate report.</p>}
+            {logs.length === 0 && (
+                <p className="mt-2 font-mono text-[11px] text-ds-faint">Available once the session has commands.</p>
+            )}
         </div>
     );
 }

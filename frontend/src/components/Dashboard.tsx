@@ -1,97 +1,40 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { TerminalSquare, ShieldAlert, ArrowLeft } from 'lucide-react';
-import LiveFeed from './LiveFeed';
+import TopNav from './TopNav';
+import LiveFeed, { type LogEntry } from './LiveFeed';
 import ReportButton from './ReportButton';
 import { socket } from '../socket';
+import { useSessionList } from '../hooks/useSessionList';
+import { BAND_RANGE, BAND_STYLE, asBand, bandOf, type Band } from '../severity';
 
 // Event shapes (sessionId may be missing on legacy/untagged events)
-interface FeedEvent { sessionId?: string; command: string; threatScore: number; severity: string; }
-interface ProfileEvent { sessionId?: string; ip: string; geo: string; isp: string; type: string; }
+interface FeedEvent { sessionId?: string; command: string; response?: string; threatScore: number; severity: string; }
+interface ProfileEvent { sessionId?: string; ip: string; geo: string; isp: string; type: string; org?: string; }
 interface SessionEvent { sessionId?: string; status?: 'active' | 'closed'; }
+type Profile = { ip: string; geo: string; isp: string; type: string; org?: string };
 
-function scoreColor(score: number) {
-    if (score >= 80) return '#EF4444';
-    if (score >= 55) return '#F59E0B';
-    return '#10B981';
+const BANDS_DESC: Band[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+const BANDS_ASC: Band[] = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+
+// Remount the dashboard per session so no state (profile, logs, selection) carries over
+// when switching sessions from the sidebar.
+export default function DashboardRoute() {
+    const { sessionId } = useParams();
+    return <Dashboard key={sessionId ?? '__all__'} />;
 }
 
-function scoreLabel(score: number) {
-    if (score >= 80) return 'CRITICAL';
-    if (score >= 55) return 'HIGH';
-    if (score >= 30) return 'MEDIUM';
-    return 'LOW';
-}
-
-function TerminalWindow({ title, path, children, delay = 0, className = '' }: { title: string, path: string, children: React.ReactNode, delay?: number, className?: string }) {
-    return (
-        <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay }}
-            className={`bg-[#050505] border border-white/10 rounded-lg shadow-2xl flex flex-col overflow-hidden ${className}`}
-        >
-            <div className="bg-[#0A0A0B] border-b border-white/10 px-4 py-2.5 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                    <TerminalSquare size={14} className="text-[#2D5BFF]" />
-                    <span className="font-mono text-[10px] text-slate-400 font-bold uppercase tracking-widest">{title}</span>
-                </div>
-                <span className="font-mono text-[9px] text-slate-600 tracking-wider hidden sm:block">{path}</span>
-            </div>
-            <div className="p-8 flex-1 flex flex-col">
-                {children}
-            </div>
-        </motion.div>
-    );
-}
-
-function ModernThreatRing({ score }: { score: number }) {
-    const radius = 50;
-    const circumference = 2 * Math.PI * radius;
-    const dash = (score / 100) * circumference;
-    const color = scoreColor(score);
-
-    return (
-        <div className="relative flex items-center justify-center w-48 h-48">
-            <svg width="192" height="192" className="rotate-[-90deg] drop-shadow-2xl">
-                <circle cx="96" cy="96" r={radius} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
-                <circle cx="96" cy="96" r={radius - 12} fill="none" stroke={`${color}44`} strokeWidth="1" strokeDasharray="4 6" className="animate-[spin_12s_linear_infinite]" />
-                <motion.circle
-                    initial={{ strokeDasharray: `0 ${circumference}` }}
-                    animate={{ strokeDasharray: `${dash} ${circumference}` }}
-                    transition={{ duration: 1.5, ease: "easeOut", delay: 0.2 }}
-                    cx="96" cy="96" r={radius} fill="none" stroke={color} strokeWidth="6" strokeLinecap="square"
-                    style={{ filter: `drop-shadow(0 0 12px ${color}88)` }}
-                />
-            </svg>
-
-            <div className="absolute inset-0 flex flex-col items-center justify-center mt-1">
-                <span className="font-black text-6xl tracking-tighter text-white">{score}</span>
-                <span className="text-[10px] font-mono tracking-widest mt-1 uppercase" style={{ color }}>
-                    {scoreLabel(score)}
-                </span>
-            </div>
-        </div>
-    );
-}
-
-export default function Dashboard() {
+function Dashboard() {
     // When sessionId is present, the dashboard shows ONLY that session.
     // Without it (/dashboard), behaviour is unchanged: all events.
     const { sessionId } = useParams();
     const navigate = useNavigate();
-    const [elapsed, setElapsed] = useState(0);
     const [threatScore, setThreatScore] = useState(0);
-    const [profile, setProfile] = useState({ ip: 'AWAITING...', geo: 'UNKNOWN', isp: 'WAITING', type: 'WAITING FOR CONNECTION' });
-    const [sessionLogs, setSessionLogs] = useState<any[]>([]);
+    const [profile, setProfile] = useState<Profile>({ ip: 'AWAITING...', geo: 'UNKNOWN', isp: 'WAITING', type: 'WAITING FOR CONNECTION' });
+    const [sessionLogs, setSessionLogs] = useState<LogEntry[]>([]);
     const [sessionStatus, setSessionStatus] = useState<'active' | 'closed'>('active');
     const [notFound, setNotFound] = useState(false);
-
-    useEffect(() => {
-        const iv = setInterval(() => setElapsed((s) => s + 1), 1000);
-        return () => clearInterval(iv);
-    }, []);
+    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const { sessions } = useSessionList();
 
     useEffect(() => {
         let cancelled = false;
@@ -146,12 +89,13 @@ export default function Dashboard() {
             if (sessionId && (!data || data.sessionId !== sessionId)) return;
             setThreatScore(data.threatScore);
 
-            const newLog = {
+            const newLog: LogEntry = {
                 id: data.sessionId + '-' + Date.now(),
                 timestamp: new Date().toISOString().replace('T', ' ').slice(0, 19),
                 command: data.command,
-                risk: data.severity,
-                score: data.threatScore
+                risk: asBand(data.severity),
+                score: data.threatScore,
+                response: data.response,
             };
             setSessionLogs((prev) => [...prev, newLog]);
         };
@@ -182,141 +126,258 @@ export default function Dashboard() {
 
     const isClosed = !!sessionId && sessionStatus === 'closed';
 
-    const fmtElapsed = (s: number) => {
-        const h = Math.floor(s / 3600).toString().padStart(2, '0');
-        const m = Math.floor((s % 3600) / 60).toString().padStart(2, '0');
-        const sec = (s % 60).toString().padStart(2, '0');
-        return `${h}:${m}:${sec}`;
-    };
+    // ---- derived, display-only values ----
+    const waiting = profile.ip.includes('AWAIT');
+    const hasData = sessionLogs.length > 0;
+    const band = bandOf(threatScore);
+    const bandSt = BAND_STYLE[band];
+    const selected = sessionLogs.find((l) => l.id === selectedId) ?? sessionLogs[sessionLogs.length - 1];
+    const following = !selectedId || !sessionLogs.some((l) => l.id === selectedId);
+    const trace = sessionLogs.slice(-18);
+    const firstInBand = new Map<Band, LogEntry>();
+    for (const l of sessionLogs) {
+        const b = asBand(l.risk);
+        if (!firstInBand.has(b)) firstInBand.set(b, l);
+    }
+    const notReached = BANDS_ASC.filter((b) => !firstInBand.has(b));
+    const activeCount = sessions.filter((s) => s.status === 'active').length;
+
+    const toggleSelect = (id: string) => setSelectedId((cur) => (cur === id ? null : id));
 
     return (
-        <div className="min-h-screen w-full bg-[#020202] text-slate-300 relative pb-20 selection:bg-[#2D5BFF]/30">
-            <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(255,255,255,0)_50%,rgba(0,0,0,1)_50%)] bg-[length:100%_4px] z-0" />
+        <div className="min-h-screen w-full bg-ds-bg text-ds-ink">
+            <TopNav />
 
-            <header className="relative z-20 border-b border-white/10 bg-[#050505] px-8 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                    <ShieldAlert size={18} className="text-[#EF4444] animate-pulse" />
-                    <h1 className="text-sm font-mono font-black tracking-[0.2em] uppercase text-white">DeceptiShield // SOC</h1>
-                    {sessionId && <span className="font-mono text-xs text-slate-400 tracking-widest">{'// '}{sessionId}</span>}
-                </div>
-                <div className="font-mono text-xs flex items-center gap-6">
-                    {isClosed
-                        ? <span className="text-slate-500 hidden md:block">[{">"} SESSION_CLOSED]</span>
-                        : <span className="text-red-500 hidden md:block">[{">"} ALERT_ACTIVE]</span>}
-                    <span className="text-[#2D5BFF]">UPTIME: {fmtElapsed(elapsed)}</span>
-                    <button onClick={() => navigate('/sessions')} className="flex items-center gap-2 text-slate-500 hover:text-white tracking-widest transition-colors">
-                        <ArrowLeft size={14} /> SESSIONS
-                    </button>
-                </div>
-            </header>
+            <div className="grid grid-cols-1 xl:h-[calc(100vh-54px)] xl:grid-cols-[264px_minmax(0,1fr)_348px] xl:overflow-hidden">
 
-            {sessionId && notFound && (
-                <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-6 font-mono text-xs text-amber-400">
-                    Session {sessionId} not found. It may have ended before a backend restart.
-                </div>
-            )}
+                {/* ───────── LEFT: sessions ───────── */}
+                <aside className="flex flex-col border-b-2 border-ds-line xl:min-h-0 xl:border-b-0 xl:border-r-2">
+                    <div className="flex items-center justify-between border-b-2 border-ds-line px-[14px] py-2.5">
+                        <button onClick={() => navigate('/sessions')} className="ds-label cursor-pointer hover:text-ds-ink">
+                            ← Sessions
+                        </button>
+                        <span className="font-mono text-[11px] font-bold tracking-[0.08em] text-ds-acc">
+                            {activeCount} ACTIVE / {sessions.length}
+                        </span>
+                    </div>
+                    <div className="ds-scroll max-h-[260px] overflow-y-auto xl:max-h-none xl:flex-1">
+                        {sessions.length === 0 && (
+                            <div className="px-[14px] py-6 font-mono text-[11px] text-ds-faint">No current sessions</div>
+                        )}
+                        {sessions.map((s) => {
+                            const on = s.sessionId === sessionId;
+                            const live = s.status === 'active';
+                            const sb = bandOf(s.threatScore);
+                            const sst = BAND_STYLE[sb];
+                            return (
+                                <button
+                                    key={s.sessionId}
+                                    onClick={() => navigate(`/dashboard/${encodeURIComponent(s.sessionId)}`)}
+                                    className={`block w-full cursor-pointer border-b border-l-4 border-b-ds-hair px-[14px] py-3 text-left transition-colors ${on ? 'border-l-ds-acc bg-ds-sel' : 'border-l-transparent hover:bg-ds-sel'}`}
+                                >
+                                    <div className="mb-1.5 flex items-center justify-between">
+                                        <span className={`font-mono text-[12.5px] font-bold tracking-[0.02em] ${on ? 'text-ds-ink' : 'text-ds-soft'}`}>{s.sessionId}</span>
+                                        <span className={`font-mono text-[10px] font-bold tracking-[0.1em] ${live ? 'text-ds-acc' : 'text-ds-faint'}`}>
+                                            {live ? '● ACTIVE' : '■ CLOSED'}
+                                        </span>
+                                    </div>
+                                    <div className="mb-2 font-mono text-[11px] text-ds-dim">{s.ip} · {s.source}</div>
+                                    <div className="flex items-center gap-2">
+                                        <span className={`inline-flex items-center gap-1.5 border px-1.5 py-[2px] font-mono text-[10px] font-bold tracking-[0.06em] ${sst.chip}`}>
+                                            {sst.glyph} {s.threatScore}
+                                        </span>
+                                        <span className="font-mono text-[10px] text-ds-faint">{s.commandCount} CMD</span>
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
+                    <div className="hidden border-t-2 border-ds-line px-[14px] py-3 xl:block">
+                        <div className="ds-label mb-1.5">Honeypot</div>
+                        <div className="font-mono text-[11px] leading-relaxed text-ds-dim">
+                            SSH on port 2222<br />Poses as ubuntu@prod-db-01
+                        </div>
+                    </div>
+                </aside>
 
-            <main className="relative z-10 max-w-[1600px] mx-auto p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-                <div className="lg:col-span-8 flex flex-col gap-8">
-                    <TerminalWindow title="Active_Intercept" path="~/deceptishield/targets/active.yml" delay={0.1}>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 font-mono">
-                            <div className="p-6 bg-white/[0.02] border border-white/5 rounded">
-                                <p className="text-[10px] text-slate-500 mb-4">TARGET_ENVIRONMENT:</p>
-                                <div className="space-y-2 text-sm">
-                                    <p><span className="text-[#2D5BFF]">host:</span> <span className="text-white">ubuntu@prod-db-01</span></p>
-                                    <p><span className="text-[#2D5BFF]">protocol:</span> <span className="text-slate-300">SSH / 22</span></p>
-                                    <p><span className="text-[#2D5BFF]">status:</span> {isClosed ? <span className="text-slate-500">CLOSED</span> : <span className="text-[#10B981]">TRAPPED</span>}</p>
+                {/* ───────── CENTER: adversary, feed, response ───────── */}
+                <section className="flex flex-col border-b-2 border-ds-line xl:min-h-0 xl:border-b-0 xl:border-r-2">
+                    {/* adversary identity */}
+                    <div className="border-b-2 border-ds-line bg-ds-panel px-[18px] pb-4 pt-3.5">
+                        <div className="flex items-start justify-between gap-5">
+                            <div className="min-w-0">
+                                <div className="ds-label mb-1.5">
+                                    {sessionId ? <>Adversary · session <span className="text-ds-ink">{sessionId}</span></> : 'All sessions (unfiltered view)'}
+                                </div>
+                                <div
+                                    title={waiting ? undefined : profile.geo}
+                                    className={`ds-display truncate text-[30px] leading-[1.05] ${waiting ? 'text-ds-ghost' : isClosed ? 'text-ds-dim' : 'text-ds-crit'}`}
+                                >
+                                    {waiting ? 'Awaiting attacker' : profile.geo}
                                 </div>
                             </div>
-                            <div className="p-6 bg-red-500/[0.02] border border-red-500/10 rounded">
-                                <p className="text-[10px] text-slate-500 mb-4">ADVERSARY_METADATA (OSINT):</p>
-                                <div className="space-y-2 text-sm">
-                                    <p><span className="text-red-400">ip_address:</span> <span className={`${profile.ip.includes("AWAIT") ? "text-slate-500 animate-pulse" : "text-white"}`}>{profile.ip}</span></p>
-                                    <p><span className="text-red-400">geo_location:</span> <span className="text-slate-300">{profile.geo}</span></p>
-                                    <p><span className="text-red-400">isp_provider:</span> <span className="text-slate-300">{profile.isp}</span></p>
-                                    <p><span className="text-red-400">connection:</span> <span className={`${profile.ip.includes("AWAIT") ? "text-slate-500" : "text-red-500 animate-pulse"}`}>{profile.type}</span></p>
+                            {sessionId && (() => {
+                                const dead = isClosed || notFound;
+                                return (
+                                    <div className={`flex shrink-0 items-center gap-2 border-2 px-3 py-1.5 ${dead ? 'border-ds-faint' : 'border-ds-acc'}`}>
+                                        <span className={`h-2 w-2 ${dead ? 'bg-ds-faint' : 'animate-[ds-pulse_1.6s_steps(1)_infinite] bg-ds-acc'}`} />
+                                        <span className={`font-mono text-[11px] font-bold tracking-[0.14em] ${dead ? 'text-ds-dim' : 'text-ds-acc'}`}>
+                                            {notFound ? 'NOT FOUND' : isClosed ? 'SESSION CLOSED' : 'LIVE'}
+                                        </span>
+                                    </div>
+                                );
+                            })()}
+                        </div>
+                        <div className="mt-3.5 grid grid-cols-2 gap-px bg-ds-line md:grid-cols-4">
+                            {[
+                                { k: 'IP address', v: profile.ip },
+                                { k: 'ISP', v: profile.isp },
+                                { k: 'Organisation', v: profile.org || '—' },
+                                { k: 'Connection', v: profile.type },
+                            ].map((c) => (
+                                <div key={c.k} className="min-w-0 bg-ds-panel px-3 py-2">
+                                    <div className="mb-1 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-ds-faint">{c.k}</div>
+                                    <div title={c.v} className={`truncate font-mono text-[13px] ${waiting ? 'text-ds-faint' : 'text-ds-ink'}`}>{c.v}</div>
                                 </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {sessionId && notFound && (
+                        <div className="border-b-2 border-ds-line bg-ds-high px-[18px] py-2 font-mono text-[12px] font-bold tracking-[0.06em] text-ds-high-ink">
+                            SESSION {sessionId} NOT FOUND. IT MAY HAVE ENDED BEFORE A BACKEND RESTART.
+                        </div>
+                    )}
+
+                    {/* feed */}
+                    <div className="flex max-h-[520px] min-h-[260px] flex-col xl:max-h-none xl:min-h-0 xl:flex-1">
+                        <LiveFeed logs={sessionLogs} selectedId={following ? null : selectedId} onSelect={toggleSelect} />
+                    </div>
+
+                    {/* what the attacker saw */}
+                    <div className="flex h-[210px] shrink-0 flex-col border-t-2 border-ds-line bg-ds-panel">
+                        <div className="flex items-center justify-between border-b border-ds-line px-[18px] py-2">
+                            <span className="ds-label">What the attacker saw: AI response</span>
+                            <span className="font-mono text-[10.5px] tracking-[0.1em] text-ds-faint">
+                                {!selected ? 'NO COMMANDS YET' : following ? 'FOLLOWING LATEST' : 'SELECTED ROW · CLICK AGAIN TO FOLLOW LATEST'}
+                            </span>
+                        </div>
+                        <div className="ds-scroll flex-1 overflow-y-auto px-[18px] pb-4 pt-3 font-mono">
+                            {!selected ? (
+                                <div className="text-[12.5px] text-ds-faint">Select a command in the feed to see the output the attacker was shown.</div>
+                            ) : (
+                                <>
+                                    <div className="mb-2.5 flex flex-wrap items-center gap-2.5 text-[13px]">
+                                        <span className="text-ds-faint">ubuntu@prod-db-01:~$</span>
+                                        <span className="font-bold text-ds-ink">{selected.command}</span>
+                                        <span className={`border px-1.5 py-[2px] text-[10px] font-bold tracking-[0.08em] ${BAND_STYLE[asBand(selected.risk)].chip}`}>
+                                            {asBand(selected.risk)} {selected.score}
+                                        </span>
+                                    </div>
+                                    <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-ds-soft">
+                                        {selected.response === undefined
+                                            ? <span className="text-ds-faint">Output not captured: this command ran before the dashboard was opened.</span>
+                                            : selected.response === '[silent execution]' || selected.response === ''
+                                                ? <span className="text-ds-faint">No output. The honeypot ran this command silently (e.g. cd, touch, mkdir, rm).</span>
+                                                : selected.response}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </section>
+
+                {/* ───────── RIGHT: threat, escalation, export ───────── */}
+                <aside className="flex flex-col xl:min-h-0">
+                    {/* threat level */}
+                    <div className="border-b-2 border-ds-line">
+                        <div className="flex items-center justify-between border-b-2 border-ds-line px-[14px] py-2.5">
+                            <span className="ds-label">Threat level</span>
+                            <span className="font-mono text-[10.5px] tracking-[0.08em] text-ds-faint">SESSION AVERAGE · 0–100</span>
+                        </div>
+                        <div className="flex gap-3.5 px-[14px] pb-3.5 pt-3">
+                            <div className="min-w-0 flex-1">
+                                <div className={`ds-display text-[96px] leading-[0.82] tracking-[-0.04em] ${!hasData ? 'text-ds-ghost' : band === 'LOW' ? 'text-ds-ink' : bandSt.text}`}>
+                                    {hasData ? threatScore : '–'}
+                                </div>
+                                <div className={`mt-2.5 inline-block border-2 px-2 py-1 font-mono text-[12px] font-bold tracking-[0.14em] ${hasData ? bandSt.chip : 'border-ds-ghost text-ds-faint'}`}>
+                                    {hasData ? band : 'NO DATA'}
+                                </div>
+                                <div className="mt-3.5 flex h-[34px] items-end gap-0.5">
+                                    {trace.map((l) => (
+                                        <div
+                                            key={l.id}
+                                            title={`${l.command} · ${l.score}`}
+                                            className={`w-[5px] ${BAND_STYLE[asBand(l.risk)].traceBg}`}
+                                            style={{ height: `${Math.max(6, Math.round(l.score * 0.34))}px` }}
+                                        />
+                                    ))}
+                                </div>
+                                <div className="mt-1.5 font-mono text-[10px] tracking-[0.1em] text-ds-faint">
+                                    SCORE TRACE · LAST {trace.length} COMMANDS
+                                </div>
+                            </div>
+                            <div className="flex w-[104px] flex-col gap-0.5">
+                                {BANDS_DESC.map((b) => {
+                                    const on = hasData && b === band;
+                                    const st = BAND_STYLE[b];
+                                    return (
+                                        <div
+                                            key={b}
+                                            className={`flex flex-1 flex-col justify-between border-l-4 px-1.5 py-1 ${on ? `${b === 'LOW' ? 'bg-ds-sel text-ds-ink' : st.chip} border-l-ds-ink` : `${st.bandBg} ${st.mark} ${st.text}`}`}
+                                            style={{ flexGrow: b === 'LOW' ? 30 : b === 'CRITICAL' ? 22 : 24 }}
+                                        >
+                                            <span className="font-mono text-[9.5px] font-bold tracking-[0.06em]">{st.glyph} {b}</span>
+                                            <span className="font-mono text-[9.5px] opacity-80">{BAND_RANGE[b]}</span>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
-                    </TerminalWindow>
+                    </div>
 
-                    <TerminalWindow title="Attack_Narrative" path="/var/log/deceptishield/syslog" delay={0.2}>
-                        <div className="space-y-5 font-mono text-sm relative">
-                            <div className="absolute left-[31px] top-2 bottom-2 w-[1px] bg-white/10" />
-                            {[
-                                { t: '04:22:11', e: '[RECON] System architecture discovery initiated', lvl: 'LOW' },
-                                { t: '04:23:05', e: '[CREDENTIAL_ACCESS] Attempting to read /etc/shadow', lvl: 'CRITICAL' },
-                                { t: '04:24:41', e: '[PRIVILEGE_ESCALATION] Sudo NOPASSWD exploit attempt', lvl: 'HIGH' },
-                            ].map(({ t, e, lvl }) => {
-                                const c = lvl === 'CRITICAL' ? '#EF4444' : lvl === 'HIGH' ? '#F59E0B' : '#10B981';
+                    {/* escalation path */}
+                    <div className="flex flex-col border-b-2 border-ds-line xl:min-h-0 xl:flex-1">
+                        <div className="border-b-2 border-ds-line px-[14px] py-2.5">
+                            <div className="ds-label">Escalation path</div>
+                            <div className="mt-1 font-mono text-[10.5px] tracking-[0.04em] text-ds-faint">
+                                COMMAND AT WHICH THE SESSION FIRST REACHED EACH BAND
+                            </div>
+                        </div>
+                        <div className="ds-scroll overflow-y-auto xl:flex-1">
+                            {/* Map keeps insertion order = chronological order of first reaching each band */}
+                            {[...firstInBand.entries()].map(([b, l]) => {
+                                const st = BAND_STYLE[b];
                                 return (
-                                    <div key={t} className="flex items-start gap-4 relative z-10">
-                                        <span className="text-[10px] text-slate-500 w-16 pt-1">{t}</span>
-                                        <div className="w-2 h-2 mt-1.5 rounded-full border border-black" style={{ background: c, boxShadow: `0 0 10px ${c}` }} />
-                                        <span className="text-slate-300 leading-relaxed">{e}</span>
+                                    <div key={b} className="flex gap-2.5 border-b border-ds-hair px-[14px] py-2.5">
+                                        <div className={`w-[3px] shrink-0 ${st.traceBg}`} />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="mb-1 flex justify-between gap-2 font-mono text-[10.5px]">
+                                                <span className={`font-bold tracking-[0.08em] ${st.text}`}>{st.glyph} {b}</span>
+                                                <span className="text-ds-faint">{l.timestamp.slice(11)}</span>
+                                            </div>
+                                            <div title={l.command} className="truncate font-mono text-[12px] text-ds-soft">{l.command}</div>
+                                        </div>
                                     </div>
                                 );
                             })}
-                        </div>
-                    </TerminalWindow>
-
-                    <TerminalWindow title="Live_Feed.exe" path="~/deceptishield/stream/tty" delay={0.3} className="min-h-[400px]">
-                        <LiveFeed logs={sessionLogs} />
-                    </TerminalWindow>
-                </div>
-
-                <div className="lg:col-span-4 flex flex-col gap-8">
-                    <TerminalWindow title="Threat_Analyzer" path="./ml_engine/score.py" delay={0.4}>
-                        <div className="flex-1 flex flex-col items-center justify-between h-full w-full pb-4">
-                            <div className="flex-1 flex flex-col items-center justify-center">
-                                <ModernThreatRing score={threatScore} />
-                            </div>
-
-                            <div className="w-full space-y-6 px-4">
-                                <div>
-                                    <div className="flex justify-between font-mono text-[10px] uppercase tracking-widest mb-3">
-                                        <span className="text-slate-400">Lateral_Mvmt</span>
-                                        <span className="text-white font-bold">91%</span>
-                                    </div>
-                                    <div className="w-full h-[2px] bg-white/[0.05] relative">
-                                        <motion.div
-                                            initial={{ width: 0 }} animate={{ width: '91%' }} transition={{ duration: 1, delay: 0.5 }}
-                                            className="absolute top-0 left-0 h-full bg-red-500"
-                                            style={{ boxShadow: '0 0 12px rgba(239,68,68,0.8)' }}
-                                        />
-                                        <motion.div
-                                            initial={{ left: 0 }} animate={{ left: '91%' }} transition={{ duration: 1, delay: 0.5 }}
-                                            className="absolute top-[-3px] w-[3px] h-[8px] bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"
-                                        />
-                                    </div>
+                            {hasData && notReached.length > 0 && (
+                                <div className="px-[14px] py-2.5 font-mono text-[10.5px] tracking-[0.06em] text-ds-faint">
+                                    NOT YET REACHED: {notReached.join(' · ')}
                                 </div>
-
-                                <div>
-                                    <div className="flex justify-between font-mono text-[10px] uppercase tracking-widest mb-3">
-                                        <span className="text-slate-400">Priv_Escalation</span>
-                                        <span className="text-white font-bold">78%</span>
-                                    </div>
-                                    <div className="w-full h-[2px] bg-white/[0.05] relative">
-                                        <motion.div
-                                            initial={{ width: 0 }} animate={{ width: '78%' }} transition={{ duration: 1, delay: 0.6 }}
-                                            className="absolute top-0 left-0 h-full bg-[#F59E0B]"
-                                            style={{ boxShadow: '0 0 12px rgba(245,158,11,0.8)' }}
-                                        />
-                                        <motion.div
-                                            initial={{ left: 0 }} animate={{ left: '78%' }} transition={{ duration: 1, delay: 0.6 }}
-                                            className="absolute top-[-3px] w-[3px] h-[8px] bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
+                            )}
+                            {!hasData && (
+                                <div className="px-[14px] py-4 font-mono text-[11px] text-ds-faint">No commands yet.</div>
+                            )}
                         </div>
-                    </TerminalWindow>
+                    </div>
 
-                    <TerminalWindow title="Ledger_Mint" path="sepolia://smart-contract/execute" delay={0.5}>
+                    {/* export */}
+                    <div className="px-[14px] py-3.5">
                         <ReportButton logs={sessionLogs} profile={profile} />
-                    </TerminalWindow>
-                </div>
-            </main>
+                    </div>
+                </aside>
+            </div>
         </div>
     );
 }
