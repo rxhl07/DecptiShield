@@ -67,6 +67,9 @@ class VirtualFileSystem:
     self.total_threat_score = 0
     self.command_count = 0
     self.osint_triggered = False
+    # Stable id for this web-terminal socket; registered on first command
+    self.session_id = f"WEB-{str(uuid.uuid4())[:6]}"
+    self.registered = False
 
   def process_command(self, command: str):
     cmd = command.strip()
@@ -286,6 +289,9 @@ async def handle_connect(sid, environ):
 @sio.on("disconnect")
 async def handle_disconnect(sid):
   if sid in active_sessions:
+    vfs = active_sessions[sid]
+    if getattr(vfs, "registered", False):
+      await session_registry.close_session(vfs.session_id)
     del active_sessions[sid]
 
 
@@ -300,9 +306,15 @@ async def handle_web_terminal_command(sid, data):
     active_sessions[sid] = vfs
 
   # Trigger OSINT automatically on the first executed command in Web Terminal
+  if not vfs.registered:
+    vfs.registered = True
+    await session_registry.register_session(vfs.session_id, vfs.ip, "WEB")
+
   if not vfs.osint_triggered:
     vfs.osint_triggered = True
     profile = await fetch_live_osint(vfs.ip, source_label="WEB TERMINAL")
+    profile = {**profile, "sessionId": vfs.session_id}
+    await session_registry.set_profile(vfs.session_id, profile)
     await sio.emit("session_profile_update", profile)
 
   vfs.process_command(command)
@@ -397,10 +409,17 @@ async def handle_web_terminal_command(sid, data):
     await sio.emit("terminal_end", {}, to=sid)
 
   dashboard_data = {
-      "sessionId": f"WEB-{str(uuid.uuid4())[:6]}",
+      "sessionId": vfs.session_id,
       "command": command,
       "response": ai_full_text if ai_full_text else "[silent execution]",
       "threatScore": session_avg_score,
       "severity": get_severity_label(session_avg_score),
   }
+  await session_registry.record_command(
+      vfs.session_id,
+      command,
+      dashboard_data["severity"],
+      session_avg_score,
+      ip=vfs.ip,
+  )
   await sio.emit("live_feed_update", dashboard_data)
