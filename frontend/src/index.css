@@ -1,27 +1,90 @@
 @import "tailwindcss";
 
+/* ── DeceptiShield "Cyber" theme tokens ──
+   Usage: bg-ds-bg, text-ds-ink, border-ds-line, font-mono, ... */
+@theme {
+  --font-sans: "Archivo", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --color-ds-bg: #0B0B0A;      /* page */
+  --color-ds-panel: #0E0E0C;   /* raised panels */
+  --color-ds-ink: #E8E6E1;     /* primary text */
+  --color-ds-soft: #B4B4AC;    /* body copy */
+  --color-ds-dim: #8F8F87;     /* labels / secondary */
+  --color-ds-faint: #66665F;   /* tertiary */
+  --color-ds-ghost: #3C3C38;
+  --color-ds-line: #2A2A26;    /* 2px structural rules */
+  --color-ds-hair: #1B1B19;    /* row separators */
+  --color-ds-acc: #B8FF00;     /* accent (lime) */
+  --color-ds-sel: #17170F;     /* selected row */
+
+  /* severity bands — match backend: LOW <30, MEDIUM 30-54, HIGH 55-79, CRITICAL 80+ */
+  --color-ds-low: #8A8A82;
+  --color-ds-low-mark: #3C3C38;
+  --color-ds-low-band: #141412;
+  --color-ds-med: #00D2FF;
+  --color-ds-med-ink: #04141A;
+  --color-ds-med-band: #10262C;
+  --color-ds-high: #FF6A00;
+  --color-ds-high-ink: #1A0A00;
+  --color-ds-high-band: #3A2410;
+  --color-ds-crit: #FF2233;
+  --color-ds-crit-ink: #0B0B0A;
+  --color-ds-crit-band: #2E0A10;
+  --color-ds-crit-dim: #4A0008;
+}
+
 :root {
-  background-color: #050505;
-  color: rgba(255, 255, 255, 0.8);
+  background-color: #0B0B0A;
+  color: #E8E6E1;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  background-color: #0B0B0A;
+}
+
+::selection {
+  background: #B8FF00;
+  color: #0B0B0A;
 }
 
 @layer components {
-  .app-bg {
-    @apply fixed inset-0 z-0 pointer-events-none overflow-hidden bg-[#050505];
-    background-image: 
-      radial-gradient(circle at 50% -20%, rgba(45, 91, 255, 0.15) 0%, transparent 50%),
-      radial-gradient(circle at 0% 100%, rgba(0, 240, 255, 0.05) 0%, transparent 40%);
+  /* Small uppercase mono label used across all pages */
+  .ds-label {
+    @apply font-mono text-[11px] font-bold uppercase tracking-[0.16em] text-ds-dim;
   }
 
-  .premium-glass {
-    @apply bg-white/[0.02] backdrop-blur-2xl border border-white/10 shadow-2xl relative overflow-hidden;
+  /* Big condensed display type */
+  .ds-display {
+    font-weight: 900;
+    font-stretch: 118%;
+    letter-spacing: -0.03em;
+    text-transform: uppercase;
   }
 
-  .cyber-btn-primary {
-    @apply bg-[#2D5BFF] text-white transition-all duration-300 shadow-[0_0_20px_rgba(45,91,255,0.3)] hover:shadow-[0_0_40px_rgba(45,91,255,0.5)] hover:bg-[#1f4ae0] active:scale-95;
+  /* Hard-shadow brutalist button; presses into its shadow */
+  .ds-press {
+    box-shadow: 8px 8px 0 #E8E6E1;
+    transition: transform 80ms ease-out, box-shadow 80ms ease-out;
+  }
+  .ds-press:hover {
+    transform: translate(2px, 2px);
+    box-shadow: 6px 6px 0 #E8E6E1;
+  }
+  .ds-press:active {
+    transform: translate(8px, 8px);
+    box-shadow: 0 0 0 #E8E6E1;
   }
 
-  .cyber-btn-ghost {
-    @apply bg-white/5 border border-white/10 text-white hover:bg-white/10 transition-all active:scale-95;
-  }
+  /* Thin square scrollbars */
+  .ds-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+  .ds-scroll::-webkit-scrollbar-track { background: transparent; }
+  .ds-scroll::-webkit-scrollbar-thumb { background: #2A2A26; }
 }
+
+@keyframes ds-blink { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }
+@keyframes ds-row-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+@keyframes ds-pulse { 0%, 100% { opacity: .3 } 50% { opacity: 1 } }
