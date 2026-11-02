@@ -1,9 +1,15 @@
 import { useState, useEffect } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { TerminalSquare, ShieldAlert } from 'lucide-react';
+import { TerminalSquare, ShieldAlert, ArrowLeft } from 'lucide-react';
 import LiveFeed from './LiveFeed';
 import ReportButton from './ReportButton';
 import { socket } from '../socket';
+
+// Event shapes (sessionId may be missing on legacy/untagged events)
+interface FeedEvent { sessionId?: string; command: string; threatScore: number; severity: string; }
+interface ProfileEvent { sessionId?: string; ip: string; geo: string; isp: string; type: string; }
+interface SessionEvent { sessionId?: string; status?: 'active' | 'closed'; }
 
 function scoreColor(score: number) {
     if (score >= 80) return '#EF4444';
@@ -70,10 +76,16 @@ function ModernThreatRing({ score }: { score: number }) {
 }
 
 export default function Dashboard() {
+    // When sessionId is present, the dashboard shows ONLY that session.
+    // Without it (/dashboard), behaviour is unchanged: all events.
+    const { sessionId } = useParams();
+    const navigate = useNavigate();
     const [elapsed, setElapsed] = useState(0);
     const [threatScore, setThreatScore] = useState(0);
     const [profile, setProfile] = useState({ ip: 'AWAITING...', geo: 'UNKNOWN', isp: 'WAITING', type: 'WAITING FOR CONNECTION' });
     const [sessionLogs, setSessionLogs] = useState<any[]>([]);
+    const [sessionStatus, setSessionStatus] = useState<'active' | 'closed'>('active');
+    const [notFound, setNotFound] = useState(false);
 
     useEffect(() => {
         const iv = setInterval(() => setElapsed((s) => s + 1), 1000);
@@ -81,22 +93,56 @@ export default function Dashboard() {
     }, []);
 
     useEffect(() => {
-        // Fetch current active profile immediately on component mount
-        fetch('http://localhost:8000/api/profile')
-            .then((res) => res.json())
-            .then((data) => {
-                if (data && data.ip) {
-                    setProfile(data);
-                }
-            })
-            .catch(() => { });
+        let cancelled = false;
 
-        socket.on('session_profile_update', (data) => {
+        // Scoped mode: load this session's history (commands, score, profile, status)
+        const loadSession = () => {
+            if (!sessionId) return;
+            fetch(`http://localhost:8000/api/sessions/${encodeURIComponent(sessionId)}`)
+                .then((res) => {
+                    if (res.status === 404) {
+                        if (!cancelled) setNotFound(true);
+                        return null;
+                    }
+                    return res.json();
+                })
+                .then((data) => {
+                    if (!data || cancelled) return;
+                    setNotFound(false);
+                    if (data.profile && data.profile.ip) setProfile(data.profile);
+                    if (Array.isArray(data.logs)) setSessionLogs(data.logs);
+                    if (typeof data.threatScore === 'number') setThreatScore(data.threatScore);
+                    if (data.status === 'active' || data.status === 'closed') setSessionStatus(data.status);
+                })
+                .catch(() => { });
+        };
+
+        if (sessionId) {
+            loadSession();
+        } else {
+            // Fetch current active profile immediately on component mount
+            fetch('http://localhost:8000/api/profile')
+                .then((res) => res.json())
+                .then((data) => {
+                    if (data && data.ip) {
+                        setProfile(data);
+                    }
+                })
+                .catch(() => { });
+        }
+
+        const onProfileUpdate = (data: ProfileEvent) => {
+            if (sessionId) {
+                if (!data || data.sessionId !== sessionId) return;
+                setProfile(data);
+                return;
+            }
             setProfile(data);
             setSessionLogs([]);
-        });
+        };
 
-        socket.on('live_feed_update', (data) => {
+        const onLiveFeedUpdate = (data: FeedEvent) => {
+            if (sessionId && (!data || data.sessionId !== sessionId)) return;
             setThreatScore(data.threatScore);
 
             const newLog = {
@@ -107,13 +153,33 @@ export default function Dashboard() {
                 score: data.threatScore
             };
             setSessionLogs((prev) => [...prev, newLog]);
-        });
+        };
+
+        const onSessionUpdate = (data: SessionEvent) => {
+            if (!sessionId || !data || data.sessionId !== sessionId) return;
+            setNotFound(false);
+            if (data.status === 'active' || data.status === 'closed') setSessionStatus(data.status);
+        };
+
+        socket.on('session_profile_update', onProfileUpdate);
+        socket.on('live_feed_update', onLiveFeedUpdate);
+        socket.on('session_update', onSessionUpdate);
+        // Re-sync scoped history after a reconnect
+        socket.on('connect', loadSession);
+        // The attacker terminal disconnects the shared socket when it unmounts
+        // (only if fully shut down; calling connect() while still connecting sends a duplicate CONNECT)
+        if (!socket.active) socket.connect();
 
         return () => {
-            socket.off('session_profile_update');
-            socket.off('live_feed_update');
+            cancelled = true;
+            socket.off('session_profile_update', onProfileUpdate);
+            socket.off('live_feed_update', onLiveFeedUpdate);
+            socket.off('session_update', onSessionUpdate);
+            socket.off('connect', loadSession);
         };
-    }, []);
+    }, [sessionId]);
+
+    const isClosed = !!sessionId && sessionStatus === 'closed';
 
     const fmtElapsed = (s: number) => {
         const h = Math.floor(s / 3600).toString().padStart(2, '0');
@@ -130,12 +196,24 @@ export default function Dashboard() {
                 <div className="flex items-center gap-4">
                     <ShieldAlert size={18} className="text-[#EF4444] animate-pulse" />
                     <h1 className="text-sm font-mono font-black tracking-[0.2em] uppercase text-white">DeceptiShield // SOC</h1>
+                    {sessionId && <span className="font-mono text-xs text-slate-400 tracking-widest">{'// '}{sessionId}</span>}
                 </div>
                 <div className="font-mono text-xs flex items-center gap-6">
-                    <span className="text-red-500 hidden md:block">[{">"} ALERT_ACTIVE]</span>
+                    {isClosed
+                        ? <span className="text-slate-500 hidden md:block">[{">"} SESSION_CLOSED]</span>
+                        : <span className="text-red-500 hidden md:block">[{">"} ALERT_ACTIVE]</span>}
                     <span className="text-[#2D5BFF]">UPTIME: {fmtElapsed(elapsed)}</span>
+                    <button onClick={() => navigate('/sessions')} className="flex items-center gap-2 text-slate-500 hover:text-white tracking-widest transition-colors">
+                        <ArrowLeft size={14} /> SESSIONS
+                    </button>
                 </div>
             </header>
+
+            {sessionId && notFound && (
+                <div className="relative z-10 max-w-[1600px] mx-auto px-8 pt-6 font-mono text-xs text-amber-400">
+                    Session {sessionId} not found. It may have ended before a backend restart.
+                </div>
+            )}
 
             <main className="relative z-10 max-w-[1600px] mx-auto p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div className="lg:col-span-8 flex flex-col gap-8">
@@ -146,7 +224,7 @@ export default function Dashboard() {
                                 <div className="space-y-2 text-sm">
                                     <p><span className="text-[#2D5BFF]">host:</span> <span className="text-white">ubuntu@prod-db-01</span></p>
                                     <p><span className="text-[#2D5BFF]">protocol:</span> <span className="text-slate-300">SSH / 22</span></p>
-                                    <p><span className="text-[#2D5BFF]">status:</span> <span className="text-[#10B981]">TRAPPED</span></p>
+                                    <p><span className="text-[#2D5BFF]">status:</span> {isClosed ? <span className="text-slate-500">CLOSED</span> : <span className="text-[#10B981]">TRAPPED</span>}</p>
                                 </div>
                             </div>
                             <div className="p-6 bg-red-500/[0.02] border border-red-500/10 rounded">
