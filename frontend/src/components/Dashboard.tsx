@@ -20,6 +20,7 @@ function scoreColor(score: number) {
 function scoreLabel(score: number) {
     if (score >= 80) return 'CRITICAL';
     if (score >= 55) return 'HIGH';
+    if (score >= 30) return 'MEDIUM';
     return 'LOW';
 }
 
