@@ -61,7 +61,9 @@ export default function Sessions() {
         // Re-sync after (re)connects so nothing is missed while disconnected
         socket.on('connect', load);
         socket.on('session_update', onSessionUpdate);
-        if (!socket.connected) socket.connect();
+        // Reconnect only if fully shut down (the attacker terminal disconnects the shared socket);
+        // calling connect() while still connecting sends a duplicate CONNECT that the server rejects.
+        if (!socket.active) socket.connect();
 
         return () => {
             socket.off('connect', load);
