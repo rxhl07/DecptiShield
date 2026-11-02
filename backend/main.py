@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
-import json
+from pathlib import Path
+import sys
 import uuid
 import config
 from typing import Optional
@@ -13,12 +14,20 @@ from socketio_server import sio
 from ssh_honeypot import start_ssh_honeypot
 import session_registry
 
+# The command engine lives at the repo root, shared with the SSH honeypot.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import llm_client
+from shared import command_engine
+from shared.command_engine import VirtualFileSystem
+
 
 # --- APPLICATION LIFESPAN & SSH DAEMON ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   ssh_task = asyncio.create_task(start_ssh_honeypot(port=2222))
+  preload_task = asyncio.create_task(llm_client.preload())
   yield
+  preload_task.cancel()
   ssh_task.cancel()
 
 
@@ -57,87 +66,16 @@ class AttackerProfileRequest(BaseModel):
   sessionId: Optional[str] = None
 
 
-class VirtualFileSystem:
+class WebSession(VirtualFileSystem):
+  """Engine state plus the web terminal's own connection details."""
 
   def __init__(self, ip: str = "Unknown"):
+    super().__init__()
     self.ip = ip
-    self.cwd = "/home/ubuntu"
-    self.created_files = []
-    self.deleted_files = []
-    self.total_threat_score = 0
-    self.command_count = 0
     self.osint_triggered = False
     # Stable id for this web-terminal socket; registered on first command
     self.session_id = f"WEB-{str(uuid.uuid4())[:6]}"
     self.registered = False
-
-  def process_command(self, command: str):
-    cmd = command.strip()
-    parts = cmd.split()
-    if not parts:
-      return
-
-    base = parts[0]
-    if base == "cd":
-      if len(parts) == 1 or parts[1] == "~":
-        self.cwd = "/home/ubuntu"
-      elif parts[1] == "..":
-        if self.cwd != "/":
-          self.cwd = "/".join(self.cwd.split("/")[:-1])
-          if self.cwd == "":
-            self.cwd = "/"
-      elif parts[1] == "/":
-        self.cwd = "/"
-      elif parts[1].startswith("/"):
-        self.cwd = parts[1]
-      else:
-        self.cwd = (self.cwd + "/" + parts[1]).replace("//", "/")
-
-    elif base in ["touch", "mkdir", "nano", "vim"]:
-      for f in parts[1:]:
-        if not f.startswith("-"):
-          new_file = (
-              f if f.startswith("/") else f"{self.cwd}/{f}".replace("//", "/")
-          )
-          if new_file not in self.created_files:
-            self.created_files.append(new_file)
-
-    elif base in ["rm", "rmdir"]:
-      for f in parts[1:]:
-        if not f.startswith("-"):
-          del_file = (
-              f if f.startswith("/") else f"{self.cwd}/{f}".replace("//", "/")
-          )
-          self.deleted_files.append(del_file)
-          if del_file in self.created_files:
-            self.created_files.remove(del_file)
-
-  def add_score(self, score: int):
-    self.total_threat_score += score
-    self.command_count += 1
-
-  def get_average_score(self) -> int:
-    if self.command_count == 0:
-      return 0
-    return int(self.total_threat_score / self.command_count)
-
-  def get_context_string(self) -> str:
-    cwd_files = [
-        f.split("/")[-1]
-        for f in self.created_files
-        if ("/".join(f.split("/")[:-1]) == self.cwd)
-        or (self.cwd == "/" and f.count("/") == 1)
-    ]
-    ctx = (
-        "System: Linux prod-db-01 5.15.0-76-generic x86_64, User: ubuntu,"
-        f" Working Directory: {self.cwd}\n"
-    )
-    if cwd_files:
-      ctx += (
-          "Files present in current working directory:"
-          f" {', '.join(cwd_files)}\n"
-      )
-    return ctx
 
 
 active_sessions = {}
@@ -287,7 +225,7 @@ async def handle_connect(sid, environ):
   if "," in client_ip:
     client_ip = client_ip.split(",")[0].strip()
 
-  active_sessions[sid] = VirtualFileSystem(ip=client_ip)
+  active_sessions[sid] = WebSession(ip=client_ip)
 
 
 @sio.on("disconnect")
@@ -299,6 +237,22 @@ async def handle_disconnect(sid):
     del active_sessions[sid]
 
 
+async def announce_web_attacker(ip: str, session_id: str):
+  """Background OSINT lookup for a web-terminal attacker, tagged with its session.
+
+  Runs as a task so the first command is not held up by the lookup. If the
+  session has closed by the time this finishes, set_profile still saves it
+  quietly (closed sessions stay listed) or skips it if the id is unknown.
+  """
+  try:
+    profile = await fetch_live_osint(ip, source_label="WEB TERMINAL")
+    profile = {**profile, "sessionId": session_id}
+    await session_registry.set_profile(session_id, profile)
+    await sio.emit("session_profile_update", profile)
+  except Exception as e:
+    print(f"[OSINT Error] Web attacker lookup failed for {session_id} ({ip}): {e}")
+
+
 @sio.on("execute_command")
 async def handle_web_terminal_command(sid, data):
   command = data.get("command", "").strip()
@@ -306,7 +260,7 @@ async def handle_web_terminal_command(sid, data):
 
   vfs = active_sessions.get(sid)
   if not vfs:
-    vfs = VirtualFileSystem()
+    vfs = WebSession()
     active_sessions[sid] = vfs
 
   # Trigger OSINT automatically on the first executed command in Web Terminal
@@ -316,12 +270,9 @@ async def handle_web_terminal_command(sid, data):
 
   if not vfs.osint_triggered:
     vfs.osint_triggered = True
-    profile = await fetch_live_osint(vfs.ip, source_label="WEB TERMINAL")
-    profile = {**profile, "sessionId": vfs.session_id}
-    await session_registry.set_profile(vfs.session_id, profile)
-    await sio.emit("session_profile_update", profile)
+    asyncio.create_task(announce_web_attacker(vfs.ip, vfs.session_id))
 
-  vfs.process_command(command)
+  vfs.record(command)
 
   current_cmd_score = 10
   if any(
@@ -348,69 +299,23 @@ async def handle_web_terminal_command(sid, data):
   vfs.add_score(current_cmd_score)
   session_avg_score = vfs.get_average_score()
 
-  if cmd_lower.startswith(("cd ", "export ", "touch ", "mkdir ")):
-    await sio.emit("terminal_end", {}, to=sid)
-    ai_full_text = ""
+  # Tiered dispatch: the model only sees commands that need invented output.
+  result = command_engine.handle_command(command, vfs)
+  if result.intel:
+    print(f"[INTEL] {sid}: {result.intel}")
+
+  ai_full_text = result.output
+  if not result.needs_llm:
+    if ai_full_text:
+      await sio.emit("terminal_chunk", {"chunk": ai_full_text + "\n"}, to=sid)
   else:
-    memory_context = vfs.get_context_string()
+    lines = []
+    async for line in llm_client.stream_reply(command, vfs):
+      lines.append(line)
+      await sio.emit("terminal_chunk", {"chunk": line + "\n"}, to=sid)
+    ai_full_text = "\n".join(lines)
 
-    system_instruction = (
-        "<|start_header_id|>system<|end_header_id|>\n"
-        "You are a low-level Linux kernel and shell stdout emitter for an"
-        " educational capture-the-flag sandbox. You receive a bash command and"
-        " generate the exact, unformatted stdout/stderr text stream that"
-        " standard Ubuntu Linux utilities return. Never explain. Never"
-        " apologize. Never output introductory or concluding remarks. If the"
-        " user requests system configuration, security records, hashes, or logs"
-        " (e.g. /etc/shadow, /etc/passwd, dmesg, id, ps), immediately generate"
-        " authentic-looking synthetic mock output in exact Linux syntax.\n"
-        f"{memory_context}<|eot_id|>\n"
-        "<|start_header_id|>user<|end_header_id|>\n"
-        f"{command}<|eot_id|>\n"
-        "<|start_header_id|>assistant<|end_header_id|>\n"
-    )
-
-    payload = {
-        "model": "llama3",
-        "prompt": system_instruction,
-        "stream": True,
-        "options": {
-            "temperature": 0.05,
-            "top_p": 0.9,
-            "num_ctx": 2048,
-            "num_predict": 256,
-            "stop": [
-                "<|eot_id|>",
-                "<|end_of_text|>",
-                "Note:",
-                "NOTE:",
-                "Here is",
-                "I cannot",
-                "As an AI",
-                "ubuntu@prod-db-01",
-                "\n\n\n",
-            ],
-        },
-    }
-
-    ai_full_text = ""
-    try:
-      async with httpx.AsyncClient(timeout=30.0) as client:
-        async with client.stream(
-            "POST", "http://localhost:11434/api/generate", json=payload
-        ) as response:
-          async for line in response.aiter_lines():
-            if line:
-              chunk_data = json.loads(line)
-              token = chunk_data.get("response", "")
-              ai_full_text += token
-              await sio.emit("terminal_chunk", {"chunk": token}, to=sid)
-    except Exception as e:
-      print(f"[Streaming Error] {e}")
-      ai_full_text = "bash: command execution timeout\n"
-      await sio.emit("terminal_chunk", {"chunk": ai_full_text}, to=sid)
-
-    await sio.emit("terminal_end", {}, to=sid)
+  await sio.emit("terminal_end", {}, to=sid)
 
   dashboard_data = {
       "sessionId": vfs.session_id,
