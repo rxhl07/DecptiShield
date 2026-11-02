@@ -67,7 +67,12 @@ async def set_profile(session_id: str, profile: dict):
 
 
 async def record_command(
-    session_id: str, command: str, severity: str, score: int, ip: str = None
+    session_id: str,
+    command: str,
+    severity: str,
+    score: int,
+    ip: str = None,
+    response: str = None,
 ):
   if not session_id:
     return
@@ -84,6 +89,7 @@ async def record_command(
       "command": command,
       "risk": severity,
       "score": score,
+      "response": response,  # AI output shown to the attacker ("" = silent)
   })
   if len(s["logs"]) > MAX_LOGS_PER_SESSION:
     s["logs"] = s["logs"][-MAX_LOGS_PER_SESSION:]

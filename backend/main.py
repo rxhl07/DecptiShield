@@ -263,7 +263,11 @@ async def register_attacker(data: AttackerProfileRequest):
 @app.post("/internal/emit")
 async def receive_honeypot_data(data: TelemetryData):
   await session_registry.record_command(
-      data.sessionId, data.command, data.severity, data.threatScore
+      data.sessionId,
+      data.command,
+      data.severity,
+      data.threatScore,
+      response=data.response,
   )
   await sio.emit(
       "live_feed_update",
@@ -421,5 +425,6 @@ async def handle_web_terminal_command(sid, data):
       dashboard_data["severity"],
       session_avg_score,
       ip=vfs.ip,
+      response=ai_full_text,
   )
   await sio.emit("live_feed_update", dashboard_data)

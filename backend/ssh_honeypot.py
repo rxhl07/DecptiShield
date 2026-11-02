@@ -214,6 +214,7 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
         telemetry["severity"],
         avg_score,
         ip=self.client_ip,
+        response=ai_output,
     )
     await sio.emit("live_feed_update", telemetry)
 
