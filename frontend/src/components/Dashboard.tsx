@@ -6,6 +6,7 @@ import ReportButton from './ReportButton';
 import { socket } from '../socket';
 import { useSessionList } from '../hooks/useSessionList';
 import { BAND_STYLE, asBand, bandOf, type Band } from '../severity';
+import { explainCommand } from '../commandExplainer';
 
 // Event shapes (sessionId may be missing on legacy/untagged events)
 interface FeedEvent { sessionId?: string; command: string; response?: string; threatScore: number; severity: string; }
@@ -152,6 +153,7 @@ function Dashboard() {
     const bandSt = BAND_STYLE[band];
     const selected = sessionLogs.find((l) => l.id === selectedId) ?? sessionLogs[sessionLogs.length - 1];
     const following = !selectedId || !sessionLogs.some((l) => l.id === selectedId);
+    const explanation = selected ? explainCommand(selected.command) : null;
     const activeCount = sessions.filter((s) => s.status === 'active').length;
     const current = sessions.find((s) => s.sessionId === sessionId);
     const dead = isClosed || notFound;
@@ -293,23 +295,25 @@ function Dashboard() {
                         <LiveFeed logs={sessionLogs} selectedId={following ? null : selectedId} onSelect={toggleSelect} />
                     </div>
 
-                    {/* what the attacker saw */}
-                    <div className="flex h-[220px] shrink-0 flex-col border-t-2 border-ds-line bg-ds-panel">
-                        <div className="flex items-baseline justify-between px-6 pb-2 pt-4">
-                            <span className="ds-label">What the attacker saw</span>
-                            <span className="font-mono text-[11px] text-ds-faint">
-                                {!selected ? '' : following ? 'Latest command · click a row to pick another' : 'Selected · click again for latest'}
+                    {/* selected command: what the attacker saw + what it does */}
+                    <div className="flex shrink-0 flex-col border-t-2 border-ds-line bg-ds-panel md:h-[236px]">
+                        <div className="flex items-baseline justify-between gap-4 px-6 pb-1 pt-4">
+                            <span className="min-w-0 truncate font-mono text-[13px]">
+                                {selected
+                                    ? <><span className="text-ds-faint">ubuntu@prod-db-01:~$ </span><span className="font-bold text-ds-ink">{selected.command}</span></>
+                                    : <span className="text-ds-faint">No command selected</span>}
+                            </span>
+                            <span className="shrink-0 font-mono text-[11px] text-ds-faint">
+                                {!selected ? '' : following ? 'Latest · click a row to pick another' : 'Selected · click again for latest'}
                             </span>
                         </div>
-                        <div className="ds-scroll flex-1 overflow-y-auto px-6 pb-5 font-mono">
-                            {!selected ? (
-                                <div className="pt-1 text-[12.5px] text-ds-faint">The AI's reply to each command will show here.</div>
-                            ) : (
-                                <>
-                                    <div className="mb-2.5 flex flex-wrap items-center gap-2.5 pt-1 text-[13px]">
-                                        <span className="text-ds-faint">ubuntu@prod-db-01:~$</span>
-                                        <span className="font-bold text-ds-ink">{selected.command}</span>
-                                    </div>
+                        <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+                            {/* left: AI output */}
+                            <div className="ds-scroll min-h-0 overflow-y-auto px-6 pb-5 pt-3 font-mono">
+                                <div className="ds-label mb-2">What the attacker saw</div>
+                                {!selected ? (
+                                    <div className="text-[12.5px] text-ds-faint">The AI's reply to each command will show here.</div>
+                                ) : (
                                     <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-ds-soft">
                                         {selected.response === undefined
                                             ? <span className="text-ds-faint">Output not captured: this command ran before the dashboard was opened.</span>
@@ -317,8 +321,31 @@ function Dashboard() {
                                                 ? <span className="text-ds-faint">No output. The honeypot ran this command silently (e.g. cd, touch, mkdir, rm).</span>
                                                 : selected.response}
                                     </div>
-                                </>
-                            )}
+                                )}
+                            </div>
+                            {/* right: built-in command reference */}
+                            <div className="ds-scroll min-h-0 overflow-y-auto border-t border-ds-line px-6 pb-5 pt-3 md:border-l md:border-t-0">
+                                <div className="ds-label mb-2">What this command does</div>
+                                {!selected ? (
+                                    <div className="font-mono text-[12.5px] text-ds-faint">Select a command to see an explanation.</div>
+                                ) : !explanation ? (
+                                    <div className="font-mono text-[12.5px] text-ds-faint">No explanation for this command in the built-in reference.</div>
+                                ) : (
+                                    <>
+                                        <div className="text-[15px] font-bold text-ds-ink">{explanation.label}</div>
+                                        <p className="mt-1.5 text-[13px] leading-relaxed text-ds-soft">{explanation.what}</p>
+                                        <p className="mt-1.5 text-[13px] leading-relaxed text-ds-dim">
+                                            <span className="text-ds-faint">Why attackers do it: </span>{explanation.why}
+                                        </p>
+                                        {explanation.mitre && (
+                                            <div className="mt-3 inline-flex max-w-full items-center gap-2 border border-ds-line px-2 py-1 font-mono text-[10.5px]">
+                                                <span className="font-bold tracking-[0.08em] text-ds-acc">MITRE {explanation.mitre.id}</span>
+                                                <span className="truncate text-ds-dim">{explanation.mitre.name}</span>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </section>
