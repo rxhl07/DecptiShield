@@ -85,6 +85,12 @@ class VirtualFileSystem:
         # Directories the attacker made. Tracked apart from files so `cd` into
         # one works and `ls` shows it as empty rather than missing.
         self.created_dirs = []
+        # Shell state: variables survive between commands, and $? needs the
+        # exit status of the last one.
+        self.env = {"HOME": HOME, "USER": USERNAME, "LOGNAME": USERNAME,
+                    "SHELL": "/bin/bash", "HOSTNAME": HOSTNAME, "LANG": "en_US.UTF-8",
+                    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+        self.status = 0
 
     def process_command(self, command):
         cmd = command.strip()
@@ -157,7 +163,9 @@ KNOWN_BINARIES = {
     "uname", "hostname", "arch", "nproc", "lscpu", "free", "uptime", "date",
     "dmesg", "mount", "lsblk", "env", "printenv", "export", "set", "unset",
     "ulimit", "umask", "alias", "echo", "tty", "which", "whereis", "basename",
-    "dirname", "sleep", "sync", "true", "false", "hash",
+    "dirname", "sleep", "sync", "true", "false", "hash", "printf", "expr", "seq",
+    "tr", "rev", "cut", "sort", "uniq", "awk", "sed", "base64", "tee", "xargs",
+    "nl", "test", "sha512sum", "man", "lsof", "lsb_release",
     # processes
     "ps", "top", "htop", "kill", "killall", "pkill", "pgrep", "nohup", "jobs",
     "systemctl", "service", "crontab",
@@ -208,7 +216,7 @@ ID_LIKE=debian
 HOME_URL="https://www.ubuntu.com/"
 UBUNTU_CODENAME=jammy"""
 
-PROC_CPUINFO = """processor\t: 0
+PROC_CPUINFO = "\n\n".join(f"""processor\t: {n}
 vendor_id\t: GenuineIntel
 cpu family\t: 6
 model\t\t: 85
@@ -219,7 +227,7 @@ cache size\t: 28160 KB
 siblings\t: 4
 cpu cores\t: 4
 flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov
-bogomips\t: 5000.00"""
+bogomips\t: 5000.00""" for n in range(4))
 
 PROC_MEMINFO = """MemTotal:        8147536 kB
 MemFree:         1204416 kB
@@ -278,8 +286,20 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 _=/usr/bin/env"""
 
 # Curated file contents, keyed by absolute path.
+AUTH_LOG = f"""Jul  8 03:12:41 {HOSTNAME} sshd[1187]: Server listening on 0.0.0.0 port 22.
+Jul  8 03:17:01 {HOSTNAME} CRON[1402]: pam_unix(cron:session): session opened for user root by (uid=0)
+Jul  8 03:17:01 {HOSTNAME} CRON[1402]: pam_unix(cron:session): session closed for user root
+Jul  8 09:41:22 {HOSTNAME} sshd[2265]: Accepted publickey for backup-svc from 10.0.3.5 port 51622 ssh2
+Jul  8 09:41:22 {HOSTNAME} sshd[2265]: pam_unix(sshd:session): session opened for user backup-svc by (uid=0)
+Jul  8 09:43:07 {HOSTNAME} sshd[2265]: pam_unix(sshd:session): session closed for user backup-svc
+Jul  8 11:02:58 {HOSTNAME} sshd[2719]: Failed password for invalid user admin from 203.0.113.44 port 40112 ssh2
+Jul  8 11:03:01 {HOSTNAME} sshd[2719]: Connection closed by invalid user admin 203.0.113.44 port 40112 [preauth]
+Jul  8 14:26:13 {HOSTNAME} sshd[3108]: Accepted password for {USERNAME} from 10.0.3.1 port 49284 ssh2
+Jul  8 14:26:13 {HOSTNAME} sshd[3108]: pam_unix(sshd:session): session opened for user {USERNAME} by (uid=0)"""
+
 FILE_CONTENTS = {
     "/etc/passwd": ETC_PASSWD,
+    "/var/log/auth.log": AUTH_LOG,
     "/etc/os-release": ETC_OS_RELEASE,
     "/etc/issue": "Ubuntu 22.04.3 LTS \\n \\l",
     "/etc/hostname": HOSTNAME,
@@ -333,6 +353,10 @@ def _uptime_string():
             "load average: 0.08, 0.03, 0.01")
 
 
+def _boot_seconds():
+    return (datetime.datetime.now() - BOOT_TIME).total_seconds()
+
+
 def _resolve(path, cwd):
     """Turn a possibly-relative path into an absolute one. No symlinks, no globs."""
     if not path:
@@ -358,6 +382,44 @@ def _resolve(path, cwd):
     return "/" + "/".join(parts)
 
 
+def _entries_in(path):
+    return DIR_LISTINGS.get(path, [])
+
+
+def path_kind(path, vfs):
+    """
+    What's at this path for this session: "dir", "file", "link", or None.
+    Only the session and the imported tree count, so anything else really is
+    missing, the way it would be on a real machine.
+    """
+    if path in vfs.deleted_files:
+        return None
+    if path == "/" or path in vfs.created_dirs or path in DIR_LISTINGS:
+        return "dir"
+    if path in vfs.created_files or path in vfs.invented_files or path in FILE_CONTENTS:
+        return "file"
+    parent = "/".join(path.split("/")[:-1]) or "/"
+    name = path.split("/")[-1]
+    if path_kind(parent, vfs) in (None, "file"):
+        return None
+    for entry in _entries_in(parent):
+        if entry[0] == name:
+            return {T_DIR: "dir", T_LINK: "link"}.get(entry[1], "file")
+    return None
+
+
+def names_in(path, vfs):
+    """Names in a directory, with this session's changes layered on top."""
+    names = {e[0] for e in _entries_in(path)}
+    for created in vfs.created_files:
+        if ("/".join(created.split("/")[:-1]) or "/") == path:
+            names.add(created.split("/")[-1])
+    for deleted in vfs.deleted_files:
+        if ("/".join(deleted.split("/")[:-1]) or "/") == path:
+            names.discard(deleted.split("/")[-1])
+    return sorted(names)
+
+
 def _split(command):
     """Tokenise like a shell, falling back to whitespace on unbalanced quotes."""
     try:
@@ -368,9 +430,20 @@ def _split(command):
 
 def handle_command(command, vfs):
     """
-    Dispatch one command. Returns a Result; if `needs_llm` is set the caller
-    should fall through to the model, otherwise `output` is the final answer.
+    Dispatch one line of input. Returns a Result; if `needs_llm` is set the
+    caller should fall through to the model, otherwise `output` is the final
+    answer.
     """
+    command = command.strip()
+    if command in vfs.invented_output:
+        return Result(vfs.invented_output[command], Tier.COMPUTED)
+    if shell.handles(command):
+        return shell.run(command, vfs)
+    return _handle_simple(command, vfs)
+
+
+def _handle_simple(command, vfs):
+    """One simple command, with no shell syntax left in it."""
     command = command.strip()
     if not command:
         return Result("", Tier.SILENT)
@@ -512,6 +585,11 @@ def _handle_computed(base, args, operands, flags, command, vfs):
         return Result(USERNAME, Tier.COMPUTED)
 
     if base == "id":
+        letters = "".join(f[1:] for f in flags)
+        if "n" in letters and ("u" in letters or "g" in letters):
+            return Result(USERNAME, Tier.COMPUTED)
+        if "u" in letters or "g" in letters:
+            return Result("1000", Tier.COMPUTED)
         return Result(f"uid=1000({USERNAME}) gid=1000({USERNAME}) "
                       f"groups=1000({USERNAME}),4(adm),27(sudo)", Tier.COMPUTED)
 
@@ -547,8 +625,12 @@ def _handle_computed(base, args, operands, flags, command, vfs):
 
     # Real clock, not a frozen literal -- running `date` twice must differ.
     if base == "date":
-        return Result(datetime.datetime.now().strftime("%a %b %d %H:%M:%S UTC %Y"),
-                      Tier.COMPUTED)
+        now = datetime.datetime.now()
+        custom = next((a[1:] for a in args if a.startswith("+")), None)
+        if custom is not None:
+            return Result(now.strftime(custom.replace("%s", str(int(now.timestamp())))),
+                          Tier.COMPUTED)
+        return Result(now.strftime("%a %b %d %H:%M:%S UTC %Y"), Tier.COMPUTED)
 
     if base == "uptime":
         return Result(_uptime_string(), Tier.COMPUTED)
@@ -560,7 +642,9 @@ def _handle_computed(base, args, operands, flags, command, vfs):
         return Result(PROC_CPUINFO, Tier.COMPUTED)
 
     if base == "free":
-        return Result(FREE_H, Tier.COMPUTED)
+        if "-h" in flags or "--human" in flags:
+            return Result(FREE_H, Tier.COMPUTED)
+        return Result(_free_table(1024 if "-m" in flags else 1), Tier.COMPUTED)
 
     if base == "df":
         return Result(DF_H, Tier.COMPUTED)
@@ -934,10 +1018,26 @@ def _handle_cat(operands, vfs):
     if content is not None:
         return Result(content, Tier.COMPUTED)
 
-    if target in vfs.deleted_files:
+    kind = path_kind(target, vfs)
+    if kind is None:
         return Result(f"cat: {operands[0]}: No such file or directory", Tier.COMPUTED)
+    if kind == "dir":
+        return Result(f"cat: {operands[0]}: Is a directory", Tier.COMPUTED)
 
     return Result(tier=Tier.LLM, needs_llm=True)
+
+
+def _free_table(unit):
+    """`free` in kB or MiB, worked out from /proc/meminfo so the two agree."""
+    info = {k.strip(): int(v.split()[0]) for k, v in
+            (line.split(":") for line in PROC_MEMINFO.split("\n"))}
+    total, free = info["MemTotal"], info["MemFree"]
+    cache = info["Buffers"] + info["Cached"]
+    used = total - free - cache
+    return ("               total        used        free      shared  buff/cache   available\n"
+            f"Mem:    {total // unit:12d}{used // unit:12d}{free // unit:12d}{0:12d}"
+            f"{cache // unit:12d}{info['MemAvailable'] // unit:12d}\n"
+            f"Swap:   {info['SwapTotal'] // unit:12d}{0:12d}{info['SwapFree'] // unit:12d}")
 
 
 def _file_content(path, vfs):
@@ -945,6 +1045,9 @@ def _file_content(path, vfs):
     The contents of a file if we know them: curated, created-empty, or
     previously invented by the model. None means nobody knows yet.
     """
+    if path == "/proc/uptime":
+        seconds = _boot_seconds()
+        return f"{seconds:.2f} {seconds * 3.7:.2f}"
     if path in FILE_CONTENTS:
         return FILE_CONTENTS[path]
     if path in vfs.invented_files:
@@ -1034,3 +1137,7 @@ def remember_llm_output(command, output, vfs):
 
     # Anything else: remember the exact command.
     vfs.invented_output[command.strip()] = output
+
+
+# Imported last: the shell layer calls back into this module.
+from . import shell  # noqa: E402
