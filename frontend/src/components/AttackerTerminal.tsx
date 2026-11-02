@@ -25,7 +25,9 @@ export default function AttackerTerminal() {
         term.loadAddon(fitAddon);
         term.open(terminalRef.current);
         fitAddon.fit();
-        socket.connect();
+        // Only reconnect if fully shut down; calling connect() while the socket is still
+        // connecting sends a duplicate CONNECT that the server rejects (socket gets dropped).
+        if (!socket.active) socket.connect();
 
         let state: 'LOCAL' | 'PASSWORD' | 'REMOTE' = 'LOCAL';
         const localPrompt = '\r\n\x1b[1;31mroot@kali\x1b[0m:\x1b[1;34m~\x1b[0m$ ';
