@@ -42,9 +42,11 @@ export default function LiveFeed({ logs, selectedId = null, onSelect }: LiveFeed
             {logs.length > 0 && (
                 <div className="flex items-center gap-4 border-b border-ds-line px-6 pb-2 font-mono text-[10px] font-bold tracking-[0.16em] text-ds-faint">
                     <span className="w-[64px] shrink-0">TIME</span>
-                    <span className="flex-1">COMMAND</span>
+                    <span className="min-w-0 flex-1">COMMAND</span>
                     <span className="w-[92px] shrink-0 text-center">SEVERITY</span>
-                    <span className="w-[96px] shrink-0 text-right" title="Session's average threat score after this command">SESSION AVG</span>
+                    <span className="w-[44px] shrink-0 text-right sm:w-[96px]" title="Session's average threat score after this command">
+                        <span className="sm:hidden">AVG</span><span className="hidden sm:inline">SESSION AVG</span>
+                    </span>
                 </div>
             )}
 
@@ -84,7 +86,7 @@ export default function LiveFeed({ logs, selectedId = null, onSelect }: LiveFeed
                             >
                                 {band}
                             </span>
-                            <span className={`w-[96px] shrink-0 text-right text-[13px] font-bold ${crit ? '' : 'text-ds-soft'}`}>{entry.score}</span>
+                            <span className={`w-[44px] shrink-0 text-right text-[13px] font-bold sm:w-[96px] ${crit ? '' : 'text-ds-soft'}`}>{entry.score}</span>
                         </div>
                     );
                 })}
