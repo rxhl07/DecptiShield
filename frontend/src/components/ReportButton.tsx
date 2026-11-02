@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { FileCode2, Download } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -26,7 +25,11 @@ export default function ReportButton({ logs, profile }: ReportProps) {
             doc.setFontSize(10);
             doc.setTextColor(100);
             doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 28);
-            doc.text(`Session ID: ${logs.length > 0 ? logs[0].id.split('-')[0] : 'N/A'}`, 14, 34);
+            // Log ids are "<sessionId>-<n>" and session ids contain a dash themselves (e.g. SSH-abc123),
+            // so take everything before the LAST dash.
+            const firstId: string = logs.length > 0 ? String(logs[0].id) : '';
+            const sessionLabel = firstId.includes('-') ? firstId.slice(0, firstId.lastIndexOf('-')) : (firstId || 'N/A');
+            doc.text(`Session ID: ${sessionLabel}`, 14, 34);
 
             // Threat Profile Section
             doc.setFontSize(14);
