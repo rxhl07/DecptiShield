@@ -147,39 +147,52 @@ def get_severity_label(score: int) -> str:
   return "LOW"
 
 
-async def fetch_live_osint(ip: str, source_label: str = "LIVE INCOMING"):
+async def fetch_live_osint(
+    ip: str,
+    source_label: str = "LIVE INCOMING",
+    override_public_ip: str = None,
+):
   global latest_profile
-  lookup_ip = ip
+  lookup_ip = override_public_ip if override_public_ip else ip
   is_internal = False
 
-  # Handle Localhost or Private LAN subnets
-  if (
-      lookup_ip in ["127.0.0.1", "::1", "localhost"]
-      or lookup_ip.startswith("192.168.")
-      or lookup_ip.startswith("10.")
-  ):
+  # Check if incoming connection is pure local loopback or local subnet
+  if lookup_ip in ["127.0.0.1", "::1", "localhost"]:
     is_internal = True
-    try:
-      async with httpx.AsyncClient(timeout=4.0) as client:
-        res = await client.get("https://api.ipify.org?format=json")
-        if res.status_code == 200:
-          lookup_ip = res.json().get("ip", ip)
-    except Exception:
-      lookup_ip = ip
+    profile = {
+        "ip": f"{ip} (Host Loopback)",
+        "geo": "Local Interface / Tunnel Endpoint",
+        "isp": "ngrok TCP Tunnel / Localhost",
+        "org": "Internal Ingress",
+        "type": f"{source_label} INTERCEPT",
+    }
+    latest_profile = profile
+    return profile
 
+  if lookup_ip.startswith("192.168.") or lookup_ip.startswith("10."):
+    is_internal = True
+    profile = {
+        "ip": f"{ip} (LAN Node)",
+        "geo": "Local Area Network",
+        "isp": "Internal Subnet Router",
+        "org": "Intranet Attacker Machine",
+        "type": f"{source_label} (LAN)",
+    }
+    latest_profile = profile
+    return profile
+
+  # Remote WAN IP Lookup via ip-api.com
   try:
     async with httpx.AsyncClient(timeout=5.0) as client:
       response = await client.get(f"http://ip-api.com/json/{lookup_ip}")
       data = response.json()
       if data.get("status") == "success":
         profile = {
-            "ip": f"{ip} (Public: {lookup_ip})" if is_internal else ip,
+            "ip": lookup_ip,
             "geo": f"{data.get('city')}, {data.get('country')}",
             "isp": data.get("isp", "Unknown ISP"),
             "org": data.get("org", "Unknown Org"),
-            "type": (
-                f"{source_label} (LAN)" if is_internal else f"{source_label}"
-            ),
+            "type": f"{source_label} WAN INTERCEPT",
         }
         latest_profile = profile
         return profile
@@ -187,10 +200,10 @@ async def fetch_live_osint(ip: str, source_label: str = "LIVE INCOMING"):
     print(f"[OSINT Query Failed] {e}")
 
   profile = {
-      "ip": ip,
-      "geo": "Internal Network Gateway",
-      "isp": "Private Subnet",
-      "org": "Local Attacker Node",
+      "ip": lookup_ip,
+      "geo": "Undetermined Location",
+      "isp": "External Provider",
+      "org": "Remote Node",
       "type": f"{source_label} INTERCEPT",
   }
   latest_profile = profile

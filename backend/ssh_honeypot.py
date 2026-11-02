@@ -78,19 +78,52 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
   async def handle_command(self, command: str):
     cmd_lower = command.lower()
 
+    # Session termination
     if cmd_lower in ["exit", "logout"]:
       self._chan.write("logout\r\nConnection to prod-db-01 closed.\r\n")
       self._chan.exit(0)
       return
 
+    # Virtual File System (VFS) State Tracking
     parts = command.split()
-    if parts[0] == "cd" and len(parts) > 1:
-      self.cwd = (
-          parts[1] if parts[1].startswith("/") else f"{self.cwd}/{parts[1]}"
-      )
-    elif parts[0] in ["touch", "mkdir"] and len(parts) > 1:
-      self.created_files.append(f"{self.cwd}/{parts[1]}")
+    base_cmd = parts[0] if parts else ""
 
+    if base_cmd == "cd":
+      if len(parts) == 1 or parts[1] == "~":
+        self.cwd = "/home/ubuntu"
+      elif parts[1] == "..":
+        if self.cwd != "/":
+          self.cwd = "/".join(self.cwd.split("/")[:-1])
+          if self.cwd == "":
+            self.cwd = "/"
+      elif parts[1] == "/":
+        self.cwd = "/"
+      else:
+        self.cwd = (
+            parts[1]
+            if parts[1].startswith("/")
+            else f"{self.cwd}/{parts[1]}".replace("//", "/")
+        )
+
+    elif base_cmd in ["touch", "mkdir", "nano", "vim"]:
+      for f in parts[1:]:
+        if not f.startswith("-"):
+          new_f = f if f.startswith("/") else f"{self.cwd}/{f}"
+          new_f = new_f.replace("//", "/")
+          if new_f not in self.created_files:
+            self.created_files.append(new_f)
+
+    elif base_cmd in ["rm", "rmdir"]:
+      for f in parts[1:]:
+        if not f.startswith("-"):
+          target_f = f if f.startswith("/") else f"{self.cwd}/{f}"
+          target_f = target_f.replace("//", "/")
+          if target_f in self.created_files:
+            self.created_files.remove(target_f)
+          if target_f not in self.deleted_files:
+            self.deleted_files.append(target_f)
+
+    # Threat Scoring Calculation
     score = 10
     if any(
         k in cmd_lower
@@ -116,22 +149,33 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
     self.command_count += 1
     avg_score = int(self.total_score / self.command_count)
 
-    if cmd_lower.startswith(("cd ", "touch ", "mkdir ", "export ")):
+    # Silent state modifications
+    if cmd_lower.startswith(
+        ("cd ", "touch ", "mkdir ", "export ", "rm ", "rmdir ")
+    ):
       ai_output = ""
       self._chan.write("ubuntu@prod-db-01:~$ ")
     else:
+      cwd_files = [
+          f.split("/")[-1]
+          for f in self.created_files
+          if ("/".join(f.split("/")[:-1]) == self.cwd)
+          or (self.cwd == "/" and f.count("/") == 1)
+      ]
+      files_str = f"Files in cwd: {', '.join(cwd_files)}" if cwd_files else ""
+
       prompt = (
-          "You are a vulnerable Ubuntu Linux server (prod-db-01). CWD:"
-          f" {self.cwd}. User created: {', '.join(self.created_files)}."
-          f" Command: {command}. Respond ONLY with exact terminal output. No"
-          " explanations."
+          "You are a low-level Linux terminal simulator for host prod-db-01."
+          f" Working Directory: {self.cwd}. {files_str}. Command: {command}."
+          " Respond strictly with the exact command stdout/stderr. Do not add"
+          " conversational text."
       )
       payload = {
           "model": "llama3",
           "prompt": prompt,
           "stream": False,
           "options": {
-              "temperature": 0.1,
+              "temperature": 0.05,
               "num_ctx": 2048,
               "num_predict": 256,
           },
@@ -155,7 +199,7 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
     telemetry = {
         "sessionId": self.session_id,
         "command": command,
-        "response": ai_output,
+        "response": ai_output if ai_output else "[silent execution]",
         "threatScore": avg_score,
         "severity": get_severity_label(avg_score),
     }
