@@ -1,9 +1,17 @@
 import asyncio
 import os
+from pathlib import Path
+import sys
 import uuid
 import asyncssh
+import config
 import httpx
 from socketio_server import sio
+
+# The command engine lives at the repo root, shared with the web terminal.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared import command_engine
+from shared.command_engine import VirtualFileSystem
 
 ssh_sessions = {}
 
@@ -36,11 +44,14 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
     self._chan = None
     self.client_ip = client_ip
     self.session_id = f"SSH-{str(uuid.uuid4())[:6]}"
-    self.cwd = "/home/ubuntu"
-    self.created_files = []
-    self.deleted_files = []
-    self.total_score = 0
-    self.command_count = 0
+    self.vfs = VirtualFileSystem()
+
+  def prompt(self):
+    """Bash shows the working directory, abbreviating the home folder to ~."""
+    cwd = self.vfs.cwd
+    home = command_engine.HOME
+    display = "~" + cwd[len(home):] if cwd.startswith(home) else cwd
+    return f"{command_engine.USERNAME}@{command_engine.HOSTNAME}:{display}$ "
 
   def connection_made(self, chan):
     self._chan = chan
@@ -52,7 +63,7 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
     self._chan.write(
         "Welcome to Ubuntu 22.04 LTS (GNU/Linux 5.15.0-76-generic x86_64)\r\n\r\n"
     )
-    self._chan.write("ubuntu@prod-db-01:~$ ")
+    self._chan.write(self.prompt())
 
   def data_received(self, data, datatype):
     for char in data:
@@ -63,14 +74,14 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
         if cmd:
           asyncio.create_task(self.handle_command(cmd))
         else:
-          self._chan.write("ubuntu@prod-db-01:~$ ")
+          self._chan.write(self.prompt())
       elif char in ("\x7f", "\x08"):
         if len(self._input) > 0:
           self._input = self._input[:-1]
           self._chan.write("\b \b")
       elif char == "\x03":
         self._input = ""
-        self._chan.write("^C\r\nubuntu@prod-db-01:~$ ")
+        self._chan.write("^C\r\n" + self.prompt())
       else:
         self._input += char
         self._chan.write(char)
@@ -84,44 +95,7 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
       self._chan.exit(0)
       return
 
-    # Virtual File System (VFS) State Tracking
-    parts = command.split()
-    base_cmd = parts[0] if parts else ""
-
-    if base_cmd == "cd":
-      if len(parts) == 1 or parts[1] == "~":
-        self.cwd = "/home/ubuntu"
-      elif parts[1] == "..":
-        if self.cwd != "/":
-          self.cwd = "/".join(self.cwd.split("/")[:-1])
-          if self.cwd == "":
-            self.cwd = "/"
-      elif parts[1] == "/":
-        self.cwd = "/"
-      else:
-        self.cwd = (
-            parts[1]
-            if parts[1].startswith("/")
-            else f"{self.cwd}/{parts[1]}".replace("//", "/")
-        )
-
-    elif base_cmd in ["touch", "mkdir", "nano", "vim"]:
-      for f in parts[1:]:
-        if not f.startswith("-"):
-          new_f = f if f.startswith("/") else f"{self.cwd}/{f}"
-          new_f = new_f.replace("//", "/")
-          if new_f not in self.created_files:
-            self.created_files.append(new_f)
-
-    elif base_cmd in ["rm", "rmdir"]:
-      for f in parts[1:]:
-        if not f.startswith("-"):
-          target_f = f if f.startswith("/") else f"{self.cwd}/{f}"
-          target_f = target_f.replace("//", "/")
-          if target_f in self.created_files:
-            self.created_files.remove(target_f)
-          if target_f not in self.deleted_files:
-            self.deleted_files.append(target_f)
+    self.vfs.record(command)
 
     # Threat Scoring Calculation
     score = 10
@@ -145,34 +119,19 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
     ):
       score = 40
 
-    self.total_score += score
-    self.command_count += 1
-    avg_score = int(self.total_score / self.command_count)
+    self.vfs.add_score(score)
+    avg_score = self.vfs.get_average_score()
 
-    # Silent state modifications
-    if cmd_lower.startswith(
-        ("cd ", "touch ", "mkdir ", "export ", "rm ", "rmdir ")
-    ):
-      ai_output = ""
-      self._chan.write("ubuntu@prod-db-01:~$ ")
-    else:
-      cwd_files = [
-          f.split("/")[-1]
-          for f in self.created_files
-          if ("/".join(f.split("/")[:-1]) == self.cwd)
-          or (self.cwd == "/" and f.count("/") == 1)
-      ]
-      files_str = f"Files in cwd: {', '.join(cwd_files)}" if cwd_files else ""
+    # Tiered dispatch: the model only sees commands that need invented output.
+    result = command_engine.handle_command(command, self.vfs)
+    if result.intel:
+      print(f"[INTEL] {self.session_id}: {result.intel}")
 
-      prompt = (
-          "You are a low-level Linux terminal simulator for host prod-db-01."
-          f" Working Directory: {self.cwd}. {files_str}. Command: {command}."
-          " Respond strictly with the exact command stdout/stderr. Do not add"
-          " conversational text."
-      )
+    ai_output = result.output
+    if result.needs_llm:
       payload = {
-          "model": "llama3",
-          "prompt": prompt,
+          "model": config.OLLAMA_MODEL,
+          "messages": command_engine.build_messages(command, self.vfs),
           "stream": False,
           "options": {
               "temperature": 0.05,
@@ -184,17 +143,28 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
       try:
         async with httpx.AsyncClient(timeout=30.0) as client:
           res = await client.post(
-              "http://localhost:11434/api/generate", json=payload
+              command_engine.chat_url(config.OLLAMA_URL), json=payload
           )
-          ai_output = res.json().get("response", "bash: command not found")
-      except Exception:
-        ai_output = "bash: command execution failed\n"
+          ai_output = res.json().get("message", {}).get("content", "")
+        ai_output = command_engine.sanitize_llm_output(ai_output)
+        validated = command_engine.validate_against_state(
+            ai_output, command, self.vfs
+        )
+        if validated is None:
+          ai_output = command_engine.fallback_output(command)
+        else:
+          ai_output = validated
+          command_engine.remember_llm_output(command, ai_output, self.vfs)
+      except Exception as e:
+        print(f"[AI Error] {e}")
+        ai_output = command_engine.fallback_output(command)
 
+    if ai_output:
       formatted = ai_output.replace("\r\n", "\n").replace("\n", "\r\n")
       if not formatted.endswith("\r\n"):
         formatted += "\r\n"
       self._chan.write(formatted)
-      self._chan.write("ubuntu@prod-db-01:~$ ")
+    self._chan.write(self.prompt())
 
     telemetry = {
         "sessionId": self.session_id,

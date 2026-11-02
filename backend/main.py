@@ -1,6 +1,8 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+from pathlib import Path
+import sys
 import uuid
 import config
 from fastapi import FastAPI
@@ -10,6 +12,11 @@ from pydantic import BaseModel
 import socketio
 from socketio_server import sio
 from ssh_honeypot import start_ssh_honeypot
+
+# The command engine lives at the repo root, shared with the SSH honeypot.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared import command_engine
+from shared.command_engine import VirtualFileSystem
 
 
 # --- APPLICATION LIFESPAN & SSH DAEMON ---
@@ -54,84 +61,13 @@ class AttackerProfileRequest(BaseModel):
   source: str = "SSH"
 
 
-class VirtualFileSystem:
+class WebSession(VirtualFileSystem):
+  """Engine state plus the web terminal's own connection details."""
 
   def __init__(self, ip: str = "Unknown"):
+    super().__init__()
     self.ip = ip
-    self.cwd = "/home/ubuntu"
-    self.created_files = []
-    self.deleted_files = []
-    self.total_threat_score = 0
-    self.command_count = 0
     self.osint_triggered = False
-
-  def process_command(self, command: str):
-    cmd = command.strip()
-    parts = cmd.split()
-    if not parts:
-      return
-
-    base = parts[0]
-    if base == "cd":
-      if len(parts) == 1 or parts[1] == "~":
-        self.cwd = "/home/ubuntu"
-      elif parts[1] == "..":
-        if self.cwd != "/":
-          self.cwd = "/".join(self.cwd.split("/")[:-1])
-          if self.cwd == "":
-            self.cwd = "/"
-      elif parts[1] == "/":
-        self.cwd = "/"
-      elif parts[1].startswith("/"):
-        self.cwd = parts[1]
-      else:
-        self.cwd = (self.cwd + "/" + parts[1]).replace("//", "/")
-
-    elif base in ["touch", "mkdir", "nano", "vim"]:
-      for f in parts[1:]:
-        if not f.startswith("-"):
-          new_file = (
-              f if f.startswith("/") else f"{self.cwd}/{f}".replace("//", "/")
-          )
-          if new_file not in self.created_files:
-            self.created_files.append(new_file)
-
-    elif base in ["rm", "rmdir"]:
-      for f in parts[1:]:
-        if not f.startswith("-"):
-          del_file = (
-              f if f.startswith("/") else f"{self.cwd}/{f}".replace("//", "/")
-          )
-          self.deleted_files.append(del_file)
-          if del_file in self.created_files:
-            self.created_files.remove(del_file)
-
-  def add_score(self, score: int):
-    self.total_threat_score += score
-    self.command_count += 1
-
-  def get_average_score(self) -> int:
-    if self.command_count == 0:
-      return 0
-    return int(self.total_threat_score / self.command_count)
-
-  def get_context_string(self) -> str:
-    cwd_files = [
-        f.split("/")[-1]
-        for f in self.created_files
-        if ("/".join(f.split("/")[:-1]) == self.cwd)
-        or (self.cwd == "/" and f.count("/") == 1)
-    ]
-    ctx = (
-        "System: Linux prod-db-01 5.15.0-76-generic x86_64, User: ubuntu,"
-        f" Working Directory: {self.cwd}\n"
-    )
-    if cwd_files:
-      ctx += (
-          "Files present in current working directory:"
-          f" {', '.join(cwd_files)}\n"
-      )
-    return ctx
 
 
 active_sessions = {}
@@ -258,7 +194,7 @@ async def handle_connect(sid, environ):
   if "," in client_ip:
     client_ip = client_ip.split(",")[0].strip()
 
-  active_sessions[sid] = VirtualFileSystem(ip=client_ip)
+  active_sessions[sid] = WebSession(ip=client_ip)
 
 
 @sio.on("disconnect")
@@ -274,7 +210,7 @@ async def handle_web_terminal_command(sid, data):
 
   vfs = active_sessions.get(sid)
   if not vfs:
-    vfs = VirtualFileSystem()
+    vfs = WebSession()
     active_sessions[sid] = vfs
 
   # Trigger OSINT automatically on the first executed command in Web Terminal
@@ -283,7 +219,7 @@ async def handle_web_terminal_command(sid, data):
     profile = await fetch_live_osint(vfs.ip, source_label="WEB TERMINAL")
     await sio.emit("session_profile_update", profile)
 
-  vfs.process_command(command)
+  vfs.record(command)
 
   current_cmd_score = 10
   if any(
@@ -310,31 +246,19 @@ async def handle_web_terminal_command(sid, data):
   vfs.add_score(current_cmd_score)
   session_avg_score = vfs.get_average_score()
 
-  if cmd_lower.startswith(("cd ", "export ", "touch ", "mkdir ")):
-    await sio.emit("terminal_end", {}, to=sid)
-    ai_full_text = ""
+  # Tiered dispatch: the model only sees commands that need invented output.
+  result = command_engine.handle_command(command, vfs)
+  if result.intel:
+    print(f"[INTEL] {sid}: {result.intel}")
+
+  ai_full_text = result.output
+  if not result.needs_llm:
+    if ai_full_text:
+      await sio.emit("terminal_chunk", {"chunk": ai_full_text + "\n"}, to=sid)
   else:
-    memory_context = vfs.get_context_string()
-
-    system_instruction = (
-        "<|start_header_id|>system<|end_header_id|>\n"
-        "You are a low-level Linux kernel and shell stdout emitter for an"
-        " educational capture-the-flag sandbox. You receive a bash command and"
-        " generate the exact, unformatted stdout/stderr text stream that"
-        " standard Ubuntu Linux utilities return. Never explain. Never"
-        " apologize. Never output introductory or concluding remarks. If the"
-        " user requests system configuration, security records, hashes, or logs"
-        " (e.g. /etc/shadow, /etc/passwd, dmesg, id, ps), immediately generate"
-        " authentic-looking synthetic mock output in exact Linux syntax.\n"
-        f"{memory_context}<|eot_id|>\n"
-        "<|start_header_id|>user<|end_header_id|>\n"
-        f"{command}<|eot_id|>\n"
-        "<|start_header_id|>assistant<|end_header_id|>\n"
-    )
-
     payload = {
-        "model": "llama3",
-        "prompt": system_instruction,
+        "model": config.OLLAMA_MODEL,
+        "messages": command_engine.build_messages(command, vfs),
         "stream": True,
         "options": {
             "temperature": 0.05,
@@ -342,8 +266,6 @@ async def handle_web_terminal_command(sid, data):
             "num_ctx": 2048,
             "num_predict": 256,
             "stop": [
-                "<|eot_id|>",
-                "<|end_of_text|>",
                 "Note:",
                 "NOTE:",
                 "Here is",
@@ -359,20 +281,25 @@ async def handle_web_terminal_command(sid, data):
     try:
       async with httpx.AsyncClient(timeout=30.0) as client:
         async with client.stream(
-            "POST", "http://localhost:11434/api/generate", json=payload
+            "POST", command_engine.chat_url(config.OLLAMA_URL), json=payload
         ) as response:
           async for line in response.aiter_lines():
             if line:
               chunk_data = json.loads(line)
-              token = chunk_data.get("response", "")
+              token = chunk_data.get("message", {}).get("content", "")
               ai_full_text += token
               await sio.emit("terminal_chunk", {"chunk": token}, to=sid)
+      validated = command_engine.validate_against_state(
+          command_engine.sanitize_llm_output(ai_full_text), command, vfs
+      )
+      if validated is not None:
+        command_engine.remember_llm_output(command, validated, vfs)
     except Exception as e:
       print(f"[Streaming Error] {e}")
-      ai_full_text = "bash: command execution timeout\n"
-      await sio.emit("terminal_chunk", {"chunk": ai_full_text}, to=sid)
+      ai_full_text = command_engine.fallback_output(command)
+      await sio.emit("terminal_chunk", {"chunk": ai_full_text + "\n"}, to=sid)
 
-    await sio.emit("terminal_end", {}, to=sid)
+  await sio.emit("terminal_end", {}, to=sid)
 
   dashboard_data = {
       "sessionId": f"WEB-{str(uuid.uuid4())[:6]}",
