@@ -4,5 +4,6 @@ python-socketio
 pymongo
 python-dotenv
 pydantic
-asyncssh 
+asyncssh
 cryptography
+httpx

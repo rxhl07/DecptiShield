@@ -349,6 +349,9 @@ def _run_stage(argv, stdin, vfs, intel):
     text = result.output + "\n" if result.output else ""
     if result.tier == engine.Tier.NOT_FOUND:
         return "", text, 127
+    # The engine returns one string; errors still have to reach stderr.
+    if text.startswith(f"{name}: "):
+        return "", text, 2 if name == "ls" else 1
     return text, "", 0
 
 

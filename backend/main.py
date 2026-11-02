@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-import json
 from pathlib import Path
 import sys
 import uuid
@@ -15,6 +14,7 @@ from ssh_honeypot import start_ssh_honeypot
 
 # The command engine lives at the repo root, shared with the SSH honeypot.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import llm_client
 from shared import command_engine
 from shared.command_engine import VirtualFileSystem
 
@@ -23,7 +23,9 @@ from shared.command_engine import VirtualFileSystem
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   ssh_task = asyncio.create_task(start_ssh_honeypot(port=2222))
+  preload_task = asyncio.create_task(llm_client.preload())
   yield
+  preload_task.cancel()
   ssh_task.cancel()
 
 
@@ -203,6 +205,11 @@ async def handle_disconnect(sid):
     del active_sessions[sid]
 
 
+async def announce_web_attacker(ip: str):
+  profile = await fetch_live_osint(ip, source_label="WEB TERMINAL")
+  await sio.emit("session_profile_update", profile)
+
+
 @sio.on("execute_command")
 async def handle_web_terminal_command(sid, data):
   command = data.get("command", "").strip()
@@ -216,8 +223,7 @@ async def handle_web_terminal_command(sid, data):
   # Trigger OSINT automatically on the first executed command in Web Terminal
   if not vfs.osint_triggered:
     vfs.osint_triggered = True
-    profile = await fetch_live_osint(vfs.ip, source_label="WEB TERMINAL")
-    await sio.emit("session_profile_update", profile)
+    asyncio.create_task(announce_web_attacker(vfs.ip))
 
   vfs.record(command)
 
@@ -256,48 +262,11 @@ async def handle_web_terminal_command(sid, data):
     if ai_full_text:
       await sio.emit("terminal_chunk", {"chunk": ai_full_text + "\n"}, to=sid)
   else:
-    payload = {
-        "model": config.OLLAMA_MODEL,
-        "messages": command_engine.build_messages(command, vfs),
-        "stream": True,
-        "options": {
-            "temperature": 0.05,
-            "top_p": 0.9,
-            "num_ctx": 2048,
-            "num_predict": 256,
-            "stop": [
-                "Note:",
-                "NOTE:",
-                "Here is",
-                "I cannot",
-                "As an AI",
-                "ubuntu@prod-db-01",
-                "\n\n\n",
-            ],
-        },
-    }
-
-    ai_full_text = ""
-    try:
-      async with httpx.AsyncClient(timeout=30.0) as client:
-        async with client.stream(
-            "POST", command_engine.chat_url(config.OLLAMA_URL), json=payload
-        ) as response:
-          async for line in response.aiter_lines():
-            if line:
-              chunk_data = json.loads(line)
-              token = chunk_data.get("message", {}).get("content", "")
-              ai_full_text += token
-              await sio.emit("terminal_chunk", {"chunk": token}, to=sid)
-      validated = command_engine.validate_against_state(
-          command_engine.sanitize_llm_output(ai_full_text), command, vfs
-      )
-      if validated is not None:
-        command_engine.remember_llm_output(command, validated, vfs)
-    except Exception as e:
-      print(f"[Streaming Error] {e}")
-      ai_full_text = command_engine.fallback_output(command)
-      await sio.emit("terminal_chunk", {"chunk": ai_full_text + "\n"}, to=sid)
+    lines = []
+    async for line in llm_client.stream_reply(command, vfs):
+      lines.append(line)
+      await sio.emit("terminal_chunk", {"chunk": line + "\n"}, to=sid)
+    ai_full_text = "\n".join(lines)
 
   await sio.emit("terminal_end", {}, to=sid)
 

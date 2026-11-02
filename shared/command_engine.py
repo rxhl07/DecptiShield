@@ -18,6 +18,7 @@ response time as suspicious -- a real box answers `touch` instantly and `find /`
 slowly, which is exactly what tiering reproduces.
 """
 
+from collections import OrderedDict
 import datetime
 import json
 import shlex
@@ -715,8 +716,10 @@ def _handle_computed(base, args, operands, flags, command, vfs):
     if base == "dirname":
         if not operands:
             return Result("", Tier.COMPUTED)
-        parent = "/".join(operands[0].rstrip("/").split("/")[:-1])
-        return Result(parent or "/", Tier.COMPUTED)
+        path = operands[0].rstrip("/")
+        if "/" not in path:
+            return Result(".", Tier.COMPUTED)
+        return Result("/".join(path.split("/")[:-1]) or "/", Tier.COMPUTED)
 
     if base == "mount":
         return Result("/dev/root on / type ext4 (rw,relatime,discard)\n"
@@ -1112,6 +1115,31 @@ def _handle_grep(operands, vfs):
         return None
     hits = [l for l in content.split("\n") if pattern in l]
     return Result("\n".join(hits), Tier.COMPUTED)
+
+
+# Model replies shared between sessions: a second attacker asking the same thing
+# gets the same answer, instantly. Keyed on session state, because `ls` means
+# something else after `touch`.
+REPLY_CACHE_SIZE = 256
+_reply_cache = OrderedDict()
+
+
+def _cache_key(command, vfs):
+    return (command.strip(), vfs.cwd, tuple(vfs.created_files), tuple(vfs.deleted_files))
+
+
+def cached_reply(command, vfs):
+    key = _cache_key(command, vfs)
+    if key not in _reply_cache:
+        return None
+    _reply_cache.move_to_end(key)
+    return _reply_cache[key]
+
+
+def store_reply(command, output, vfs):
+    _reply_cache[_cache_key(command, vfs)] = output
+    while len(_reply_cache) > REPLY_CACHE_SIZE:
+        _reply_cache.popitem(last=False)
 
 
 def remember_llm_output(command, output, vfs):

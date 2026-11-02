@@ -4,12 +4,12 @@ from pathlib import Path
 import sys
 import uuid
 import asyncssh
-import config
 import httpx
 from socketio_server import sio
 
 # The command engine lives at the repo root, shared with the web terminal.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import llm_client
 from shared import command_engine
 from shared.command_engine import VirtualFileSystem
 
@@ -129,37 +129,12 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
 
     ai_output = result.output
     if result.needs_llm:
-      payload = {
-          "model": config.OLLAMA_MODEL,
-          "messages": command_engine.build_messages(command, self.vfs),
-          "stream": False,
-          "options": {
-              "temperature": 0.05,
-              "num_ctx": 2048,
-              "num_predict": 256,
-          },
-      }
-
-      try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-          res = await client.post(
-              command_engine.chat_url(config.OLLAMA_URL), json=payload
-          )
-          ai_output = res.json().get("message", {}).get("content", "")
-        ai_output = command_engine.sanitize_llm_output(ai_output)
-        validated = command_engine.validate_against_state(
-            ai_output, command, self.vfs
-        )
-        if validated is None:
-          ai_output = command_engine.fallback_output(command)
-        else:
-          ai_output = validated
-          command_engine.remember_llm_output(command, ai_output, self.vfs)
-      except Exception as e:
-        print(f"[AI Error] {e}")
-        ai_output = command_engine.fallback_output(command)
-
-    if ai_output:
+      lines = []
+      async for line in llm_client.stream_reply(command, self.vfs):
+        lines.append(line)
+        self._chan.write(line + "\r\n")
+      ai_output = "\n".join(lines)
+    elif ai_output:
       formatted = ai_output.replace("\r\n", "\n").replace("\n", "\r\n")
       if not formatted.endswith("\r\n"):
         formatted += "\r\n"
