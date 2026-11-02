@@ -4,6 +4,7 @@ import uuid
 import asyncssh
 import httpx
 from socketio_server import sio
+import session_registry
 
 ssh_sessions = {}
 
@@ -18,12 +19,16 @@ def get_severity_label(score: int) -> str:
   return "LOW"
 
 
-async def notify_attacker_connected(client_ip: str):
+async def notify_attacker_connected(client_ip: str, session_id: str = None):
   try:
     async with httpx.AsyncClient(timeout=5.0) as client:
       await client.post(
           "http://127.0.0.1:8000/internal/attacker-connected",
-          json={"ip": client_ip, "source": "SSH INTERCEPT"},
+          json={
+              "ip": client_ip,
+              "source": "SSH INTERCEPT",
+              "sessionId": session_id,
+          },
       )
   except Exception as e:
     print(f"[SSH Alert Error] Could not register attacker IP: {e}")
@@ -31,11 +36,11 @@ async def notify_attacker_connected(client_ip: str):
 
 class SSHHoneypotSession(asyncssh.SSHServerSession):
 
-  def __init__(self, client_ip: str):
+  def __init__(self, client_ip: str, session_id: str = None):
     self._input = ""
     self._chan = None
     self.client_ip = client_ip
-    self.session_id = f"SSH-{str(uuid.uuid4())[:6]}"
+    self.session_id = session_id or f"SSH-{str(uuid.uuid4())[:6]}"
     self.cwd = "/home/ubuntu"
     self.created_files = []
     self.deleted_files = []
@@ -203,6 +208,13 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
         "threatScore": avg_score,
         "severity": get_severity_label(avg_score),
     }
+    await session_registry.record_command(
+        self.session_id,
+        command,
+        telemetry["severity"],
+        avg_score,
+        ip=self.client_ip,
+    )
     await sio.emit("live_feed_update", telemetry)
 
 
@@ -210,6 +222,8 @@ class SSHHoneypotServer(asyncssh.SSHServer):
 
   def __init__(self):
     self.client_ip = "127.0.0.1"
+    # asyncssh creates one SSHHoneypotServer per connection -> one session id
+    self.session_id = f"SSH-{str(uuid.uuid4())[:6]}"
 
   def connection_made(self, conn):
     peername = conn.get_extra_info("peername")
@@ -217,15 +231,31 @@ class SSHHoneypotServer(asyncssh.SSHServer):
       self.client_ip = peername[0]
       print(f"[SSH Server] Inbound connection detected from: {self.client_ip}")
 
+  def connection_lost(self, exc):
+    asyncio.create_task(session_registry.close_session(self.session_id))
+
   def password_auth_supported(self):
     return True
 
   def validate_password(self, username, password):
-    asyncio.create_task(notify_attacker_connected(self.client_ip))
+    asyncio.create_task(
+        session_registry.register_session(
+            self.session_id, self.client_ip, "SSH"
+        )
+    )
+    asyncio.create_task(
+        notify_attacker_connected(self.client_ip, self.session_id)
+    )
     return True
 
   def session_requested(self):
-    return SSHHoneypotSession(self.client_ip)
+    # Safety net in case auth happened without validate_password (idempotent)
+    asyncio.create_task(
+        session_registry.register_session(
+            self.session_id, self.client_ip, "SSH"
+        )
+    )
+    return SSHHoneypotSession(self.client_ip, self.session_id)
 
 
 async def start_ssh_honeypot(port=2222):

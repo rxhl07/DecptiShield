@@ -54,6 +54,7 @@ class TelemetryData(BaseModel):
 class AttackerProfileRequest(BaseModel):
   ip: str
   source: str = "SSH"
+  sessionId: Optional[str] = None
 
 
 class VirtualFileSystem:
@@ -249,12 +250,18 @@ async def register_attacker(data: AttackerProfileRequest):
   profile = await fetch_live_osint(
       data.ip, source_label=f"{data.source} INGRESS"
   )
+  if data.sessionId:
+    profile = {**profile, "sessionId": data.sessionId}
+    await session_registry.set_profile(data.sessionId, profile)
   await sio.emit("session_profile_update", profile)
   return {"status": "profile_updated", "profile": profile}
 
 
 @app.post("/internal/emit")
 async def receive_honeypot_data(data: TelemetryData):
+  await session_registry.record_command(
+      data.sessionId, data.command, data.severity, data.threatScore
+  )
   await sio.emit(
       "live_feed_update",
       data.model_dump() if hasattr(data, "model_dump") else data.dict(),
