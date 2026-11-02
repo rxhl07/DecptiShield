@@ -92,6 +92,9 @@ class VirtualFileSystem:
                     "SHELL": "/bin/bash", "HOSTNAME": HOSTNAME, "LANG": "en_US.UTF-8",
                     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
         self.status = 0
+        # Permissions changed by chmod, and Ubuntu's default aliases from .bashrc.
+        self.modes = {}
+        self.aliases = {"ll": "ls -alF", "la": "ls -A", "l": "ls -CF"}
 
     def process_command(self, command):
         cmd = command.strip()
@@ -298,8 +301,34 @@ Jul  8 11:03:01 {HOSTNAME} sshd[2719]: Connection closed by invalid user admin 2
 Jul  8 14:26:13 {HOSTNAME} sshd[3108]: Accepted password for {USERNAME} from 10.0.3.1 port 49284 ssh2
 Jul  8 14:26:13 {HOSTNAME} sshd[3108]: pam_unix(sshd:session): session opened for user {USERNAME} by (uid=0)"""
 
+HOME_NOTES = """TODO before quarter end
+- rotate the replication password on db-02
+- move backups off this box, disk is at 70%
+- ask infra why cron mail bounces
+- patch postgres during the next window"""
+
+HOME_BACKUP = """#!/bin/bash
+# Nightly database dump, run from cron.
+DEST=/var/backups/db
+STAMP=$(date +%F)
+mkdir -p $DEST
+pg_dump -U backup-svc prod > $DEST/prod-$STAMP.sql
+gzip -f $DEST/prod-$STAMP.sql
+find $DEST -name '*.gz' -mtime +14 -delete"""
+
+BASH_HISTORY = """sudo systemctl status postgresql
+df -h
+tail -n 50 /var/log/auth.log
+vim backup.sh
+crontab -e
+exit"""
+
 FILE_CONTENTS = {
     "/etc/passwd": ETC_PASSWD,
+    f"{HOME}/notes.txt": HOME_NOTES,
+    f"{HOME}/backup.sh": HOME_BACKUP,
+    f"{HOME}/.bash_history": BASH_HISTORY,
+    "/proc/uptime": "",
     "/var/log/auth.log": AUTH_LOG,
     "/etc/os-release": ETC_OS_RELEASE,
     "/etc/issue": "Ubuntu 22.04.3 LTS \\n \\l",
@@ -395,23 +424,45 @@ def path_kind(path, vfs):
     """
     if path in vfs.deleted_files:
         return None
-    if path == "/" or path in vfs.created_dirs or path in DIR_LISTINGS:
+    if path == "/":
         return "dir"
-    if path in vfs.created_files or path in vfs.invented_files or path in FILE_CONTENTS:
-        return "file"
     parent = "/".join(path.split("/")[:-1]) or "/"
     name = path.split("/")[-1]
     if path_kind(parent, vfs) in (None, "file"):
         return None
+    if path in vfs.created_dirs or path in DIR_LISTINGS:
+        return "dir"
+    if path in vfs.created_files or path in vfs.invented_files or path in FILE_CONTENTS:
+        return "file"
     for entry in _entries_in(parent):
         if entry[0] == name:
             return {T_DIR: "dir", T_LINK: "link"}.get(entry[1], "file")
     return None
 
 
+def metadata(path, vfs):
+    """(type, size, mode, uid, gid) for a path that exists."""
+    parent = "/".join(path.split("/")[:-1]) or "/"
+    name = path.split("/")[-1]
+    entry = next((e for e in _entries_in(parent) if e[0] == name), None)
+    if path in vfs.created_dirs:
+        ftype, size, mode, uid, gid = T_DIR, 4096, 0o40755, 1000, 1000
+    elif entry:
+        ftype, size, mode, uid, gid = entry[1:6]
+    else:
+        ftype, size, mode, uid, gid = T_FILE, 0, 0o100644, 1000, 1000
+    content = _file_content(path, vfs)
+    if content is not None and ftype == T_FILE:
+        size = len(content.encode())
+    return ftype, size, vfs.modes.get(path, mode), uid, gid
+
+
 def names_in(path, vfs):
     """Names in a directory, with this session's changes layered on top."""
     names = {e[0] for e in _entries_in(path)}
+    for curated in FILE_CONTENTS:
+        if ("/".join(curated.split("/")[:-1]) or "/") == path:
+            names.add(curated.split("/")[-1])
     for created in vfs.created_files:
         if ("/".join(created.split("/")[:-1]) or "/") == path:
             names.add(created.split("/")[-1])
@@ -438,7 +489,7 @@ def handle_command(command, vfs):
     command = command.strip()
     if command in vfs.invented_output:
         return Result(vfs.invented_output[command], Tier.COMPUTED)
-    if shell.handles(command):
+    if shell.handles(command, vfs):
         return shell.run(command, vfs)
     return _handle_simple(command, vfs)
 
@@ -597,6 +648,13 @@ def _handle_computed(base, args, operands, flags, command, vfs):
     if base == "groups":
         return Result(f"{USERNAME} adm sudo", Tier.COMPUTED)
 
+    if base == "lsb_release":
+        return Result("No LSB modules are available.\n"
+                      "Distributor ID:\tUbuntu\n"
+                      "Description:\tUbuntu 22.04.3 LTS\n"
+                      "Release:\t22.04\n"
+                      "Codename:\tjammy", Tier.COMPUTED)
+
     if base == "hostname":
         return Result(HOSTNAME, Tier.COMPUTED)
 
@@ -637,7 +695,15 @@ def _handle_computed(base, args, operands, flags, command, vfs):
         return Result(_uptime_string(), Tier.COMPUTED)
 
     if base in ("env", "printenv"):
-        return Result(ENV_OUTPUT, Tier.COMPUTED)
+        values = dict(vfs.env, PWD=vfs.cwd)
+        if base == "printenv" and operands:
+            return Result("\n".join(values[o] for o in operands if o in values), Tier.COMPUTED)
+        return Result("\n".join(f"{k}={v}" for k, v in values.items()), Tier.COMPUTED)
+
+    if base == "whereis" and operands:
+        found = operands[0] in KNOWN_BINARIES
+        return Result(f"{operands[0]}:" + (f" /usr/bin/{operands[0]}" if found else ""),
+                      Tier.COMPUTED)
 
     if base == "lscpu":
         return Result(PROC_CPUINFO, Tier.COMPUTED)
@@ -767,66 +833,40 @@ def _mode_string(mode, ftype):
     return kind + bits
 
 
+def _long_line(path, shown, vfs):
+    ftype, size, mode, uid, gid = metadata(path, vfs)
+    stamp = datetime.datetime.now().strftime("%b %e %H:%M")
+    owner = _UID_NAMES.get(uid, str(uid))
+    group = _UID_NAMES.get(gid, str(gid))
+    return f"{_mode_string(mode, ftype)} 1 {owner:8} {group:8} {size:7d} {stamp} {shown}"
+
+
 def _handle_ls(operands, flags, vfs):
     """List a directory from the imported tree plus whatever the session changed."""
     target = _resolve(operands[0], vfs.cwd) if operands else vfs.cwd
+    shown = operands[0] if operands else target
+    long_form = any("l" in f for f in flags)
+    kind = path_kind(target, vfs)
 
-    if target in vfs.deleted_files:
-        return Result(f"ls: cannot access '{operands[0] if operands else target}': "
-                      "No such file or directory", Tier.COMPUTED)
+    if kind is None:
+        return Result(f"ls: cannot access '{shown}': No such file or directory", Tier.COMPUTED)
+    if kind != "dir":
+        return Result(_long_line(target, shown, vfs) if long_form else shown, Tier.COMPUTED)
 
-    if target in DIR_LISTINGS:
-        entries = list(DIR_LISTINGS[target])
-    elif target in vfs.created_dirs:
-        # A directory the attacker just made: real, and empty.
-        entries = []
-    else:
-        # Could still be a file rather than a directory.
-        parent = "/".join(target.split("/")[:-1]) or "/"
-        name = target.split("/")[-1]
-        known_here = (parent in DIR_LISTINGS
-                      and any(e[0] == name for e in DIR_LISTINGS[parent]))
-        if known_here or target in vfs.created_files:
-            return Result(operands[0] if operands else target, Tier.COMPUTED)
-        return Result(f"ls: cannot access '{operands[0] if operands else target}': "
-                      "No such file or directory", Tier.COMPUTED)
+    names = names_in(target, vfs)
+    if not any("a" in f.lower() for f in flags):
+        names = [n for n in names if not n.startswith(".")]
+    if not names:
+        return Result("total 0" if long_form else "", Tier.COMPUTED)
 
-    # Layer this session's changes over the static tree.
-    for path in vfs.created_files:
-        if "/".join(path.split("/")[:-1] or ["/"]) == target or \
-                ("/".join(path.split("/")[:-1]) or "/") == target:
-            name = path.split("/")[-1]
-            if not any(e[0] == name for e in entries):
-                is_dir = path in vfs.created_dirs
-                entries.append([name,
-                                T_DIR if is_dir else T_FILE,
-                                4096 if is_dir else 0,
-                                0o40755 if is_dir else 0o100644,
-                                1000, 1000])
-    for path in vfs.deleted_files:
-        if ("/".join(path.split("/")[:-1]) or "/") == target:
-            name = path.split("/")[-1]
-            entries = [e for e in entries if e[0] != name]
-
-    if not any("a" in f for f in flags):
-        entries = [e for e in entries if not e[0].startswith(".")]
-    entries.sort(key=lambda e: e[0])
-
-    if not entries:
-        return Result("", Tier.COMPUTED)
-
-    if any("l" in f for f in flags):
-        stamp = datetime.datetime.now().strftime("%b %e %H:%M")
-        total = sum(max(e[2], 1024) for e in entries) // 1024
-        lines = [f"total {total}"]
-        for name, ftype, size, mode, uid, gid in entries:
-            owner = _UID_NAMES.get(uid, str(uid))
-            group = _UID_NAMES.get(gid, str(gid))
-            lines.append(f"{_mode_string(mode, ftype)} 1 {owner:8} {group:8} "
-                         f"{size:7d} {stamp} {name}")
+    base = target.rstrip("/")
+    if long_form:
+        paths = [f"{base}/{n}" for n in names]
+        total = sum(max(metadata(p, vfs)[1], 1024) for p in paths) // 1024
+        lines = [f"total {total}"] + [_long_line(p, n, vfs) for p, n in zip(paths, names)]
         return Result("\n".join(lines), Tier.COMPUTED)
 
-    return Result("  ".join(e[0] for e in entries), Tier.COMPUTED)
+    return Result("  ".join(names), Tier.COMPUTED)
 
 
 # ---------------------------------------------------------------------------
@@ -871,8 +911,39 @@ def build_messages(command, vfs, persona=""):
     )
     if persona:
         system += f"\nContext: {persona}"
+    system += _session_facts(command, vfs)
     return [{"role": "system", "content": system},
             {"role": "user", "content": command}]
+
+
+def _session_facts(command, vfs):
+    """What this session changed, plus the contents of any file the command names."""
+    facts = ""
+    if vfs.created_files or vfs.deleted_files:
+        facts += "\n" + vfs.get_context_string().strip()
+    for word in _split(command)[1:]:
+        path = _resolve(word, vfs.cwd)
+        if path in vfs.created_files or path in vfs.invented_files:
+            content = _file_content(path, vfs) or ""
+            facts += f"\n{word} is empty." if not content else \
+                f"\nContents of {word}:\n{content[:800]}"
+    return facts
+
+
+def unknown_file_in(command, vfs):
+    """
+    The first file a pipeline reads whose contents nobody has invented yet.
+    Anything that changes state is left alone, because the caller runs the
+    command a second time once the file exists.
+    """
+    if any(mark in command for mark in (";", "&", ">")):
+        return None
+    for word in _split(command):
+        if not word.startswith("-") and ("/" in word or "." in word):
+            path = _resolve(word, vfs.cwd)
+            if path_kind(path, vfs) == "file" and _file_content(path, vfs) is None:
+                return word
+    return None
 
 
 def chat_url(generate_url):
@@ -1125,7 +1196,13 @@ _reply_cache = OrderedDict()
 
 
 def _cache_key(command, vfs):
-    return (command.strip(), vfs.cwd, tuple(vfs.created_files), tuple(vfs.deleted_files))
+    """`cat notes.txt` and `cat /home/ubuntu/notes.txt` are the same question."""
+    words = _split(command)
+    if len(words) == 2 and words[0] in _FILE_VIEWERS:
+        command = f"{words[0]} {_resolve(words[1], vfs.cwd)}"
+    return (command.strip(), vfs.cwd if command == command.strip() else "",
+            tuple(vfs.created_files), tuple(vfs.deleted_files),
+            tuple(sorted(vfs.invented_files.items())))
 
 
 def cached_reply(command, vfs):

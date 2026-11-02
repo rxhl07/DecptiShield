@@ -75,6 +75,17 @@ async def stream_reply(command: str, vfs):
   partway through stops there. A reply with nothing usable falls back to a
   plausible shell error, never an error from this code.
   """
+  unknown = command_engine.unknown_file_in(command, vfs)
+  if unknown and command != f"cat {unknown}":
+    async for _ in stream_reply(f"cat {unknown}", vfs):
+      pass
+    result = command_engine.handle_command(command, vfs)
+    if not result.needs_llm:
+      if result.output:
+        for line in result.output.split("\n"):
+          yield line
+      return
+
   cached = command_engine.cached_reply(command, vfs)
   if cached is not None:
     command_engine.remember_llm_output(command, cached, vfs)

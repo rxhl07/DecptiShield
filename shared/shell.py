@@ -13,6 +13,7 @@ to the model as before. Being wrong costs more than being slow.
 
 import ast
 import base64
+import datetime
 import fnmatch
 import hashlib
 import operator
@@ -33,12 +34,14 @@ class _NeedsModel(Exception):
     pass
 
 
-def handles(command):
+def handles(command, vfs):
     """True if this needs more than the engine's single-command handling."""
     words = command.split()
     if not words:
         return False
-    if words[0] in TOOLS or _ASSIGNMENT.match(words[0]) or words[0] in _SCRIPT_WORDS:
+    first = words[0]
+    if (first in TOOLS or first in vfs.aliases or "/" in first
+            or _ASSIGNMENT.match(first) or first in _SCRIPT_WORDS):
         return True
     quote = None
     for ch in command:
@@ -337,9 +340,14 @@ def _run_stage(argv, stdin, vfs, intel):
         return "", "", 0
 
     name, args = argv[assignments], argv[assignments + 1:]
+    if name in vfs.aliases:
+        expanded = vfs.aliases[name].split() + args
+        return _run_stage(expanded, stdin, _AliasGuard(vfs, name), intel)
     tool = TOOLS.get(name)
     if tool:
         return tool(args, stdin, vfs)
+    if "/" in name:
+        return _run_file(name, vfs, intel)
 
     result = engine._handle_simple(shlex.join(argv[assignments:]), vfs)
     if result.needs_llm:
@@ -353,6 +361,50 @@ def _run_stage(argv, stdin, vfs, intel):
     if text.startswith(f"{name}: "):
         return "", text, 2 if name == "ls" else 1
     return text, "", 0
+
+
+class _AliasGuard:
+    """Stops `alias ls='ls -l'` from expanding forever."""
+
+    def __init__(self, vfs, name):
+        self._vfs, self._name = vfs, name
+
+    def __getattr__(self, attribute):
+        if attribute == "aliases":
+            return {k: v for k, v in self._vfs.aliases.items() if k != self._name}
+        return getattr(self._vfs, attribute)
+
+    def __setattr__(self, attribute, value):
+        if attribute.startswith("_"):
+            object.__setattr__(self, attribute, value)
+        else:
+            setattr(self._vfs, attribute, value)
+
+
+def _script(content, vfs, intel):
+    """Run a session file's lines. Returns (stdout, stderr, status)."""
+    sink = []
+    for line in content.split("\n"):
+        if line.strip() and not line.startswith("#"):
+            _run_list(line, vfs, sink, intel)
+    out = "".join(text for stream, text in sink if stream == "out")
+    err = "".join(text for stream, text in sink if stream == "err")
+    return out, err, vfs.status
+
+
+def _run_file(name, vfs, intel):
+    path = engine._resolve(name, vfs.cwd)
+    kind = engine.path_kind(path, vfs)
+    if kind is None:
+        return "", f"bash: {name}: No such file or directory\n", 127
+    if kind == "dir":
+        return "", f"bash: {name}: Is a directory\n", 126
+    if not engine.metadata(path, vfs)[2] & 0o111:
+        return "", f"bash: {name}: Permission denied\n", 126
+    content = engine._file_content(path, vfs)
+    if content is None:
+        raise _NeedsModel
+    return _script(content, vfs, intel)
 
 
 def _apply_redirects(redirects, out, err, status, vfs):
@@ -399,11 +451,15 @@ def _create(path, vfs, directory=False):
 
 def _remove(path, vfs):
     vfs.deleted_files.append(path)
-    vfs.invented_files.pop(path, None)
-    if path in vfs.created_files:
-        vfs.created_files.remove(path)
-    if path in vfs.created_dirs:
-        vfs.created_dirs.remove(path)
+    prefix = path + "/"
+    vfs.created_files[:] = [p for p in vfs.created_files
+                            if p != path and not p.startswith(prefix)]
+    vfs.created_dirs[:] = [p for p in vfs.created_dirs
+                           if p != path and not p.startswith(prefix)]
+    for stored in list(vfs.invented_files):
+        if stored == path or stored.startswith(prefix):
+            del vfs.invented_files[stored]
+    vfs.modes.pop(path, None)
 
 
 def _write(name, text, append, vfs):
@@ -524,6 +580,8 @@ def _seq(args, stdin, vfs):
         first, step, last = numbers
     else:
         return "", "seq: missing operand\n", 1
+    if step == 0 or abs(last - first) // abs(step) > 100000:
+        raise _NeedsModel
     return "".join(f"{n}\n" for n in range(first, last + (1 if step > 0 else -1), step)), "", 0
 
 
@@ -609,10 +667,13 @@ def _rev(args, stdin, vfs):
 
 
 def _cut(args, stdin, vfs):
-    delimiter, fields, files, i = "\t", None, [], 0
+    delimiter, fields, columns, files, i = "\t", None, None, [], 0
     while i < len(args):
         arg = args[i]
-        if arg.startswith("-d"):
+        if arg.startswith("-c"):
+            columns = arg[2:] or args[i + 1]
+            i += 0 if arg[2:] else 1
+        elif arg.startswith("-d"):
             delimiter = arg[2:] or args[i + 1]
             i += 0 if arg[2:] else 1
         elif arg.startswith("-f"):
@@ -623,6 +684,12 @@ def _cut(args, stdin, vfs):
         else:
             files.append(arg)
         i += 1
+    if columns:
+        first, dash, last = columns.partition("-")
+        start = int(first or 1) - 1
+        stop = (int(last) if last else None) if dash else start + 1
+        text, errors = _inputs(files, stdin, "cut", vfs)
+        return "".join(line[start:stop] + "\n" for line in text.splitlines()), errors, 0
     if fields is None:
         return "", "cut: you must specify a list of bytes, characters, or fields\n", 1
     wanted = [int(f) for f in fields.split(",")]
@@ -883,6 +950,8 @@ def _copy(tool, move):
                 _create(destination, vfs, directory=kind == "dir")
                 if content is not None and kind != "dir":
                     vfs.invented_files[destination] = content
+                if source in vfs.modes:
+                    vfs.modes[destination] = vfs.modes[source]
                 if move:
                     _remove(source, vfs)
         return "", errors, 1 if errors else 0
@@ -905,11 +974,347 @@ def _unset(args, stdin, vfs):
     return "", "", 0
 
 
-def _interpreter(args, stdin, vfs):
-    """`curl x | sh` runs nothing here; real scripts go to the model."""
-    if args:
+def _size_text(size):
+    return f"{size / 1024:.1f}K" if size < 1048576 else f"{size / 1048576:.1f}M"
+
+
+def _stat(args, stdin, vfs):
+    _, names = _options(args)
+    if not names:
+        return "", "stat: missing operand\n", 1
+    blocks, errors = [], ""
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.000000000 +0000")
+    for name in names:
+        path = engine._resolve(name, vfs.cwd)
+        kind = engine.path_kind(path, vfs)
+        if kind is None:
+            errors += f"stat: cannot statx '{name}': No such file or directory\n"
+            continue
+        ftype, size, mode, uid, gid = engine.metadata(path, vfs)
+        label = {"dir": "directory", "link": "symbolic link"}.get(
+            kind, "regular file" if size else "regular empty file")
+        permissions = f"{mode & 0o7777:04o}/{engine._mode_string(mode, ftype)}"
+        owner = engine._UID_NAMES.get(uid, str(uid))
+        group = engine._UID_NAMES.get(gid, str(gid))
+        blocks.append(
+            f"  File: {name}\n"
+            f"  Size: {size:<10d}\tBlocks: {(size + 4095) // 4096 * 8:<10d} IO Block: 4096   {label}\n"
+            f"Device: 801h/2049d\tInode: {1300000 + sum(map(ord, path)):<11d} Links: 1\n"
+            f"Access: ({permissions})  Uid: ({uid:5d}/{owner:>8})   Gid: ({gid:5d}/{group:>8})\n"
+            f"Access: {stamp}\nModify: {stamp}\nChange: {stamp}\n Birth: -\n")
+    return "".join(blocks), errors, 1 if errors else 0
+
+
+def _file(args, stdin, vfs):
+    _, names = _options(args)
+    if not names:
+        return "", "Usage: file [OPTION...] FILE...\n", 1
+    lines = ""
+    for name in names:
+        path = engine._resolve(name, vfs.cwd)
+        kind = engine.path_kind(path, vfs)
+        content = engine._file_content(path, vfs) if kind == "file" else None
+        if kind is None:
+            lines += f"{name}: cannot open `{name}' (No such file or directory)\n"
+        elif kind == "dir":
+            lines += f"{name}: directory\n"
+        elif kind == "link":
+            lines += f"{name}: symbolic link\n"
+        elif content == "":
+            lines += f"{name}: empty\n"
+        elif content is None:
+            lines += f"{name}: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, stripped\n"
+        elif content.startswith("#!"):
+            lines += f"{name}: Bourne-Again shell script, ASCII text executable\n"
+        elif name.endswith((".c", ".h")):
+            lines += f"{name}: C source, ASCII text\n"
+        elif name.endswith(".py"):
+            lines += f"{name}: Python script, ASCII text executable\n"
+        else:
+            lines += f"{name}: ASCII text\n"
+    return lines, "", 0
+
+
+def _tree_size(path, vfs):
+    """Disk use in KiB, in 4K blocks the way du counts it."""
+    kind = engine.path_kind(path, vfs)
+    size = engine.metadata(path, vfs)[1] if kind else 0
+    total = (size + 4095) // 4096 * 4
+    if kind == "dir":
+        total = 4 + sum(_tree_size(f"{path.rstrip('/')}/{n}", vfs)
+                        for n in engine.names_in(path, vfs))
+    return total
+
+
+def _du(args, stdin, vfs):
+    flags, names = _options(args)
+    letters = "".join(f[1:] for f in flags)
+    errors, lines = "", ""
+    for name in names or ["."]:
+        path = engine._resolve(name, vfs.cwd)
+        if engine.path_kind(path, vfs) is None:
+            errors += f"du: cannot access '{name}': No such file or directory\n"
+            continue
+        total = _tree_size(path, vfs)
+        lines += (f"{_size_text(total * 1024)}\t{name}\n" if "h" in letters else f"{total}\t{name}\n")
+    return lines, errors, 1 if errors else 0
+
+
+def _sed(args, stdin, vfs):
+    quiet = in_place = False
+    words = []
+    for arg in args:
+        if arg in ("-n", "--quiet"):
+            quiet = True
+        elif arg == "-i":
+            in_place = True
+        elif arg.startswith("-"):
+            raise _NeedsModel
+        else:
+            words.append(arg)
+    if not words:
+        return "", "Usage: sed [OPTION]... {script-only-if-no-other-script} [input-file]...\n", 1
+    script, files = words[0], words[1:]
+    text, errors = _inputs(files, stdin, "sed", vfs)
+    if errors:
+        return "", errors.replace("sed: ", "sed: can't read ", 1), 2
+    lines = text.splitlines()
+    swap = re.fullmatch(r"s/((?:[^/\\]|\\.)*)/((?:[^/\\]|\\.)*)/(g?)", script)
+    line_op = re.fullmatch(r"(\d+)(?:,(\d+))?([pd])", script)
+    if swap:
+        pattern, replacement, every = swap.groups()
+        lines = [re.sub(pattern, replacement.replace("\\", r"\\"), line, count=0 if every else 1)
+                 for line in lines]
+    elif line_op:
+        first = int(line_op.group(1))
+        last = int(line_op.group(2) or first)
+        inside = [first <= n <= last for n in range(1, len(lines) + 1)]
+        if line_op.group(3) == "d":
+            lines = [line for line, hit in zip(lines, inside) if not hit]
+        elif quiet:
+            lines = [line for line, hit in zip(lines, inside) if hit]
+        else:
+            lines = [item for line, hit in zip(lines, inside)
+                     for item in ([line, line] if hit else [line])]
+    else:
         raise _NeedsModel
+    result = "".join(line + "\n" for line in lines)
+    if in_place and files:
+        return "", _write(files[0], result, False, vfs), 0
+    return result, "", 0
+
+
+def _nl(args, stdin, vfs):
+    _, files = _options(args)
+    text, errors = _inputs(files, stdin, "nl", vfs)
+    count, lines = 0, ""
+    for line in text.splitlines():
+        if line.strip():
+            count += 1
+            lines += f"{count:6d}\t{line}\n"
+        else:
+            lines += "       \n"
+    return lines, errors, 1 if errors else 0
+
+
+def _find(args, stdin, vfs):
+    roots = []
+    while args and not args[0].startswith("-"):
+        roots.append(args[0])
+        args = args[1:]
+    tests, depth, i = [], None, 0
+    while i < len(args):
+        option = args[i]
+        value = args[i + 1] if i + 1 < len(args) else None
+        if option == "-name" and value is not None:
+            tests.append(lambda path, kind, mode, v=value: fnmatch.fnmatchcase(path.split("/")[-1] or "/", v))
+        elif option == "-iname" and value is not None:
+            tests.append(lambda path, kind, mode, v=value: fnmatch.fnmatch(
+                (path.split("/")[-1] or "/").lower(), v.lower()))
+        elif option == "-type" and value in ("f", "d"):
+            wanted = "file" if value == "f" else "dir"
+            tests.append(lambda path, kind, mode, w=wanted: kind == w)
+        elif option == "-perm" and value in ("-4000", "/4000", "-u=s", "-2000", "/2000", "-g=s"):
+            bit = 0o2000 if value.endswith("2000") or value == "-g=s" else 0o4000
+            tests.append(lambda path, kind, mode, b=bit: mode & b)
+        elif option == "-maxdepth" and value is not None:
+            depth = int(value)
+        else:
+            raise _NeedsModel
+        i += 2
+
+    lines, errors = [], ""
+    for root in roots or ["."]:
+        start = engine._resolve(root, vfs.cwd)
+        if engine.path_kind(start, vfs) is None:
+            errors += f"find: ‘{root}’: No such file or directory\n"
+            continue
+        stack = [(start, root, 0)]
+        while stack:
+            path, shown, level = stack.pop()
+            kind = engine.path_kind(path, vfs)
+            mode = engine.metadata(path, vfs)[2]
+            if all(test(path, kind, mode) for test in tests):
+                lines.append(shown)
+            if kind == "dir" and (depth is None or level < depth):
+                for name in sorted(engine.names_in(path, vfs), reverse=True):
+                    child = f"{path.rstrip('/')}/{name}"
+                    stack.append((child, f"{shown.rstrip('/')}/{name}", level + 1))
+    return "".join(line + "\n" for line in lines), errors, 1 if errors else 0
+
+
+def _chmod(args, stdin, vfs):
+    words = [a for a in args if not re.fullmatch(r"-[RvcCf]+", a)]
+    if len(words) < 2:
+        after = f" after ‘{words[0]}’" if words else ""
+        return "", f"chmod: missing operand{after}\nTry 'chmod --help' for more information.\n", 1
+    change, names = words[0], words[1:]
+    errors = ""
+    for name in names:
+        path = engine._resolve(name, vfs.cwd)
+        if engine.path_kind(path, vfs) is None:
+            errors += f"chmod: cannot access '{name}': No such file or directory\n"
+            continue
+        if not _can_write(path, vfs):
+            errors += f"chmod: changing permissions of '{name}': Operation not permitted\n"
+            continue
+        mode = engine.metadata(path, vfs)[2]
+        if re.fullmatch(r"[0-7]{3,4}", change):
+            vfs.modes[path] = (mode & ~0o7777) | int(change, 8)
+            continue
+        symbolic = re.fullmatch(r"([ugoa]*)([+-])([rwx]+)", change)
+        if not symbolic:
+            return "", f"chmod: invalid mode: '{change}'\n", 1
+        who, sign, what = symbolic.groups()
+        who = who.replace("a", "ugo") or "ugo"
+        bits = 0
+        for person in who:
+            shift = {"u": 6, "g": 3, "o": 0}[person]
+            for letter in what:
+                bits |= {"r": 4, "w": 2, "x": 1}[letter] << shift
+        vfs.modes[path] = mode | bits if sign == "+" else mode & ~bits
+    return "", errors, 1 if errors else 0
+
+
+def _ln(args, stdin, vfs):
+    flags, names = _options(args)
+    if len(names) != 2:
+        return "", "ln: missing file operand\n", 1
+    target = engine._resolve(names[0], vfs.cwd)
+    link = engine._resolve(names[1], vfs.cwd)
+    if engine.path_kind(link, vfs) is not None and "-sf" not in flags:
+        return "", f"ln: failed to create symbolic link '{names[1]}': File exists\n", 1
+    if not _can_write(link, vfs):
+        return "", f"ln: failed to create symbolic link '{names[1]}': Permission denied\n", 1
+    _create(link, vfs)
+    content = engine._file_content(target, vfs)
+    if content is not None:
+        vfs.invented_files[link] = content
     return "", "", 0
+
+
+def _printenv(args, stdin, vfs):
+    values = dict(vfs.env, PWD=vfs.cwd)
+    if not args:
+        return "".join(f"{k}={v}\n" for k, v in values.items()), "", 0
+    found = [values[a] for a in args if a in values]
+    return "".join(f"{v}\n" for v in found), "", 0 if len(found) == len(args) else 1
+
+
+def _alias(args, stdin, vfs):
+    if not args:
+        return "".join(f"alias {k}='{v}'\n" for k, v in sorted(vfs.aliases.items())), "", 0
+    lines, status = "", 0
+    for item in args:
+        name, sign, value = item.partition("=")
+        if sign:
+            vfs.aliases[name] = value
+        elif name in vfs.aliases:
+            lines += f"alias {name}='{vfs.aliases[name]}'\n"
+        else:
+            lines += f"bash: alias: {name}: not found\n"
+            status = 1
+    return lines, "", status
+
+
+def _unalias(args, stdin, vfs):
+    for name in args:
+        vfs.aliases.pop(name, None)
+    return "", "", 0
+
+
+def _tar(args, stdin, vfs):
+    """Creating an archive only needs the file to appear; reading one needs the model."""
+    match = re.fullmatch(r"-?c[a-z]*f[a-z]*", args[0]) if args else None
+    if not match or len(args) < 3:
+        raise _NeedsModel
+    missing = [n for n in args[2:] if engine.path_kind(engine._resolve(n, vfs.cwd), vfs) is None]
+    if missing:
+        return "", "".join(f"tar: {n}: Cannot stat: No such file or directory\n" for n in missing), 2
+    return "", _write(args[1], "", False, vfs), 0
+
+
+def _gcc(args, stdin, vfs):
+    output, sources, i = "a.out", [], 0
+    while i < len(args):
+        if args[i] == "-o" and i + 1 < len(args):
+            output = args[i + 1]
+            i += 1
+        elif not args[i].startswith("-"):
+            sources.append(args[i])
+        elif args[i] in ("--version", "-v"):
+            raise _NeedsModel
+        i += 1
+    if not sources:
+        return "", "gcc: fatal error: no input files\ncompilation terminated.\n", 1
+    for name in sources:
+        if engine.path_kind(engine._resolve(name, vfs.cwd), vfs) is None:
+            return "", (f"gcc: error: {name}: No such file or directory\n"
+                        "gcc: fatal error: no input files\ncompilation terminated.\n"), 1
+    error = _write(output, "", False, vfs)
+    if error:
+        return "", error, 1
+    vfs.modes[engine._resolve(output, vfs.cwd)] = 0o100755
+    return "", "", 0
+
+
+def _python(tool):
+    def run_tool(args, stdin, vfs):
+        if args and args[0] in ("-V", "--version"):
+            return "Python 3.10.12\n", "", 0
+        if not args or args[0].startswith("-"):
+            raise _NeedsModel
+        path = engine._resolve(args[0], vfs.cwd)
+        kind = engine.path_kind(path, vfs)
+        if kind is None:
+            return "", f"{tool}: can't open file '{path}': [Errno 2] No such file or directory\n", 2
+        if kind == "dir":
+            return "", f"/usr/bin/{tool}: can't find '__main__' module in '{path}'\n", 1
+        if engine._file_content(path, vfs) == "":
+            return "", "", 0
+        raise _NeedsModel    # the model sees the file's contents
+    return run_tool
+
+
+def _source(args, stdin, vfs):
+    if not args:
+        return "", "bash: source: filename argument required\n", 2
+    content, error = _read(args[0], "bash", vfs)
+    if error:
+        return "", error, 1
+    return _script(content, vfs, {})
+
+
+def _interpreter(args, stdin, vfs):
+    """`curl x | sh` runs nothing here. A named file runs like any other script."""
+    if not args:
+        return "", "", 0
+    if args[0].startswith("-"):
+        raise _NeedsModel
+    content, error = _read(args[0], "bash", vfs)
+    if error:
+        return "", error, 127
+    return _script(content, vfs, {})
 
 
 TOOLS = {
@@ -921,4 +1326,8 @@ TOOLS = {
     "cd": _cd, "touch": _touch, "mkdir": _mkdir, "rmdir": _rmdir, "rm": _rm,
     "cp": _copy("cp", move=False), "mv": _copy("mv", move=True),
     "export": _export, "unset": _unset, "sh": _interpreter, "bash": _interpreter,
+    "stat": _stat, "file": _file, "du": _du, "sed": _sed, "nl": _nl, "find": _find,
+    "chmod": _chmod, "ln": _ln, "alias": _alias, "unalias": _unalias, "tar": _tar,
+    "gcc": _gcc, "cc": _gcc, "python": _python("python"), "python3": _python("python3"),
+    "source": _source, ".": _source, "printenv": _printenv,
 }

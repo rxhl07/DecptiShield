@@ -749,6 +749,674 @@
       ]
     },
     {
+      "name": "session_memory_empty",
+      "score": "accuracy",
+      "steps": [
+        {
+          "id": "ME-01",
+          "cmd": "touch hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-02",
+          "cmd": "cat hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-03",
+          "cmd": "head hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-04",
+          "cmd": "tail hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-05",
+          "cmd": "wc -l hi.c",
+          "check": {
+            "regex": "^0 hi\\.c$"
+          }
+        },
+        {
+          "id": "ME-06",
+          "cmd": "grep x hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-07",
+          "cmd": "sort hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-08",
+          "cmd": "sed -n 1p hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-09",
+          "cmd": "nl hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-10",
+          "cmd": "stat hi.c",
+          "check": {
+            "regex": "[Ss]ize: 0\\s+.*regular empty file"
+          }
+        },
+        {
+          "id": "ME-11",
+          "cmd": "file hi.c",
+          "check": {
+            "exact": "hi.c: empty"
+          }
+        },
+        {
+          "id": "ME-12",
+          "cmd": "ls -l hi.c",
+          "check": {
+            "regex": "^-rw-[r-]{2}-.* 0 .* hi\\.c$"
+          }
+        },
+        {
+          "id": "ME-13",
+          "cmd": "du hi.c",
+          "check": {
+            "exact": "0\thi.c"
+          }
+        },
+        {
+          "id": "ME-14",
+          "cmd": "cd hi.c",
+          "check": {
+            "regex": "cd: hi\\.c: Not a directory$"
+          }
+        },
+        {
+          "id": "ME-15",
+          "cmd": "./hi.c",
+          "check": {
+            "regex": "\\./hi\\.c: Permission denied$"
+          }
+        },
+        {
+          "id": "ME-16",
+          "cmd": "bash hi.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "ME-17",
+          "cmd": "cat hi.c | wc -l",
+          "check": {
+            "exact": "0"
+          }
+        }
+      ],
+      "local_safe": true
+    },
+    {
+      "name": "session_memory_content",
+      "score": "accuracy",
+      "steps": [
+        {
+          "id": "MC-01",
+          "cmd": "echo one > f.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MC-02",
+          "cmd": "wc -c f.txt",
+          "check": {
+            "exact": "4 f.txt"
+          }
+        },
+        {
+          "id": "MC-03",
+          "cmd": "ls -l f.txt",
+          "check": {
+            "regex": "^-rw-[r-]{2}-.* 4 .* f\\.txt$"
+          }
+        },
+        {
+          "id": "MC-04",
+          "cmd": "stat f.txt",
+          "check": {
+            "regex": "[Ss]ize: 4\\s+.*regular file"
+          }
+        },
+        {
+          "id": "MC-05",
+          "cmd": "file f.txt",
+          "check": {
+            "exact": "f.txt: ASCII text"
+          }
+        },
+        {
+          "id": "MC-06",
+          "cmd": "sed 's/one/two/' f.txt",
+          "check": {
+            "exact": "two"
+          }
+        },
+        {
+          "id": "MC-07",
+          "cmd": "cat f.txt",
+          "check": {
+            "exact": "one"
+          }
+        },
+        {
+          "id": "MC-08",
+          "cmd": "sed -n 1p f.txt",
+          "check": {
+            "exact": "one"
+          }
+        },
+        {
+          "id": "MC-09",
+          "cmd": "nl f.txt",
+          "check": {
+            "exact": "     1\tone"
+          }
+        },
+        {
+          "id": "MC-10",
+          "cmd": "cp f.txt g.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MC-11",
+          "cmd": "cat g.txt",
+          "check": {
+            "exact": "one"
+          }
+        },
+        {
+          "id": "MC-12",
+          "cmd": "echo two > g.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MC-13",
+          "cmd": "cat f.txt",
+          "check": {
+            "exact": "one"
+          }
+        },
+        {
+          "id": "MC-14",
+          "cmd": "cat g.txt",
+          "check": {
+            "exact": "two"
+          }
+        },
+        {
+          "id": "MC-15",
+          "cmd": "mv g.txt h.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MC-16",
+          "cmd": "ls g.txt",
+          "check": {
+            "regex": "No such file or directory$"
+          }
+        },
+        {
+          "id": "MC-17",
+          "cmd": "cat h.txt",
+          "check": {
+            "exact": "two"
+          }
+        }
+      ],
+      "local_safe": true
+    },
+    {
+      "name": "session_memory_scripts",
+      "score": "accuracy",
+      "steps": [
+        {
+          "id": "MS-01",
+          "cmd": "echo 'echo from script' > run.sh",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MS-02",
+          "cmd": "./run.sh",
+          "check": {
+            "regex": "run\\.sh: Permission denied$"
+          }
+        },
+        {
+          "id": "MS-03",
+          "cmd": "chmod +x run.sh",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MS-04",
+          "cmd": "ls -l run.sh",
+          "check": {
+            "regex": "^-rwx"
+          }
+        },
+        {
+          "id": "MS-05",
+          "cmd": "./run.sh",
+          "check": {
+            "exact": "from script"
+          }
+        },
+        {
+          "id": "MS-06",
+          "cmd": "bash run.sh",
+          "check": {
+            "exact": "from script"
+          }
+        },
+        {
+          "id": "MS-07",
+          "cmd": "sh run.sh",
+          "check": {
+            "exact": "from script"
+          }
+        },
+        {
+          "id": "MS-08",
+          "cmd": ". ./run.sh",
+          "check": {
+            "exact": "from script"
+          }
+        },
+        {
+          "id": "MS-09",
+          "cmd": "X=7",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MS-10",
+          "cmd": "echo 'echo $X' > v.sh",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MS-11",
+          "cmd": ". ./v.sh",
+          "check": {
+            "exact": "7"
+          }
+        },
+        {
+          "id": "MS-12",
+          "cmd": "chmod -x run.sh",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MS-13",
+          "cmd": "./run.sh",
+          "check": {
+            "regex": "run\\.sh: Permission denied$"
+          }
+        }
+      ],
+      "local_safe": true
+    },
+    {
+      "name": "session_memory_deleted",
+      "score": "accuracy",
+      "steps": [
+        {
+          "id": "MD-01",
+          "cmd": "touch gone.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-02",
+          "cmd": "rm gone.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-03",
+          "cmd": "cat gone.txt",
+          "check": {
+            "regex": "gone\\.txt: No such file or directory$"
+          }
+        },
+        {
+          "id": "MD-04",
+          "cmd": "ls gone.txt",
+          "check": {
+            "regex": "gone\\.txt.*No such file or directory$"
+          }
+        },
+        {
+          "id": "MD-05",
+          "cmd": "stat gone.txt",
+          "check": {
+            "regex": "gone\\.txt.*No such file or directory"
+          }
+        },
+        {
+          "id": "MD-06",
+          "cmd": "wc gone.txt",
+          "check": {
+            "regex": "gone\\.txt: No such file or directory$"
+          }
+        },
+        {
+          "id": "MD-07",
+          "cmd": "find . -name gone.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-08",
+          "cmd": "file gone.txt",
+          "check": {
+            "regex": "No such file or directory"
+          }
+        },
+        {
+          "id": "MD-09",
+          "cmd": "chmod +x gone.txt",
+          "check": {
+            "regex": "gone\\.txt.*No such file or directory$"
+          }
+        },
+        {
+          "id": "MD-10",
+          "cmd": "mkdir box",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-11",
+          "cmd": "touch box/inner.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-12",
+          "cmd": "echo x > box/data.txt",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-13",
+          "cmd": "find box -type f | sort",
+          "check": {
+            "exact": "box/data.txt\nbox/inner.txt"
+          }
+        },
+        {
+          "id": "MD-14",
+          "cmd": "find box -name inner.txt",
+          "check": {
+            "exact": "box/inner.txt"
+          }
+        },
+        {
+          "id": "MD-15",
+          "cmd": "find box -type d",
+          "check": {
+            "exact": "box"
+          }
+        },
+        {
+          "id": "MD-16",
+          "cmd": "rm box",
+          "check": {
+            "regex": "box.*Is a directory$"
+          }
+        },
+        {
+          "id": "MD-17",
+          "cmd": "rmdir box",
+          "check": {
+            "regex": "box.*Directory not empty$"
+          }
+        },
+        {
+          "id": "MD-18",
+          "cmd": "cat box",
+          "check": {
+            "regex": "box: Is a directory$"
+          }
+        },
+        {
+          "id": "MD-19",
+          "cmd": "rm -r box",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-20",
+          "cmd": "ls box",
+          "check": {
+            "regex": "box.*No such file or directory$"
+          }
+        },
+        {
+          "id": "MD-21",
+          "cmd": "cat box/inner.txt",
+          "check": {
+            "regex": "No such file or directory$"
+          }
+        },
+        {
+          "id": "MD-22",
+          "cmd": "mkdir box",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-23",
+          "cmd": "ls box",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MD-24",
+          "cmd": "cat box/inner.txt",
+          "check": {
+            "regex": "No such file or directory$"
+          }
+        }
+      ],
+      "local_safe": true
+    },
+    {
+      "name": "session_memory_tools",
+      "score": "accuracy",
+      "steps": [
+        {
+          "id": "MT-01",
+          "cmd": "gcc nope.c",
+          "check": {
+            "regex": "nope\\.c: No such file or directory"
+          }
+        },
+        {
+          "id": "MT-02",
+          "cmd": "echo \"int main(){}\" > m.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-03",
+          "cmd": "gcc m.c -o m",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-04",
+          "cmd": "ls -l m",
+          "check": {
+            "regex": "^-rwx"
+          }
+        },
+        {
+          "id": "MT-05",
+          "cmd": "./m",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-06",
+          "cmd": "python3 nope.py",
+          "check": {
+            "regex": "can't open file .*nope\\.py.*No such file or directory"
+          }
+        },
+        {
+          "id": "MT-07",
+          "cmd": "touch e.py",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-08",
+          "cmd": "python3 e.py",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-09",
+          "cmd": "ln -s /etc/passwd lnk",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-10",
+          "cmd": "cat lnk | head -1",
+          "check": {
+            "regex": "^root:x:0:0"
+          }
+        },
+        {
+          "id": "MT-11",
+          "cmd": "ll",
+          "check": {
+            "regex": "^total \\d+"
+          }
+        },
+        {
+          "id": "MT-12",
+          "cmd": "export Q=1",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-13",
+          "cmd": "env | grep Q=",
+          "check": {
+            "exact": "Q=1"
+          }
+        },
+        {
+          "id": "MT-14",
+          "cmd": "printenv Q",
+          "check": {
+            "exact": "1"
+          }
+        },
+        {
+          "id": "MT-15",
+          "cmd": "tar czf b.tgz m.c",
+          "check": {
+            "empty": true
+          }
+        },
+        {
+          "id": "MT-16",
+          "cmd": "ls b.tgz",
+          "check": {
+            "exact": "b.tgz"
+          }
+        },
+        {
+          "id": "MT-17",
+          "cmd": "cat notes.txt | wc -l",
+          "check": {
+            "regex": "^[1-9]\\d*$"
+          }
+        },
+        {
+          "id": "MT-18",
+          "cmd": "wc -c notes.txt",
+          "check": {
+            "regex": "^\\d+ notes\\.txt$"
+          }
+        },
+        {
+          "id": "MT-19",
+          "cmd": "ls -l notes.txt",
+          "check": {
+            "regex": " \\d+ .* notes\\.txt$"
+          }
+        },
+        {
+          "id": "MT-20",
+          "cmd": "./backup.sh > /dev/null"
+        }
+      ]
+    },
+    {
       "name": "repeat",
       "score": "consistency",
       "steps": [

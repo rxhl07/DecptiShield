@@ -61,7 +61,7 @@ class SSHHoneypotSession(asyncssh.SSHServerSession):
 
   def session_started(self):
     self._chan.write(
-        "Welcome to Ubuntu 22.04 LTS (GNU/Linux 5.15.0-76-generic x86_64)\r\n\r\n"
+        "Welcome to Ubuntu 22.04.3 LTS (GNU/Linux 5.15.0-76-generic x86_64)\r\n\r\n"
     )
     self._chan.write(self.prompt())
 

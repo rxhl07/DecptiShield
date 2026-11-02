@@ -153,7 +153,8 @@ class WslSession:
             ["wsl.exe", "-d", distro, "--exec", "bash", "--noprofile", "--norc"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         )
-        self.run('cd "$(mktemp -d)"')
+        # One stream, so errors stay in order with the marker that ends each reply.
+        self.run('exec 2>&1; cd "$(mktemp -d)"')
 
     def run(self, command):
         start = time.perf_counter()
