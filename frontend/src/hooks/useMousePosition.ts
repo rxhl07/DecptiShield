@@ -1,4 +1,4 @@
-import { useState, useEffect, RefObject } from 'react';
+import { useState, useEffect, type RefObject } from 'react';
 
 export function useMousePosition(ref: RefObject<HTMLElement | null>) {
     const [mousePos, setMousePos] = useState({ x: 0, y: 0 });

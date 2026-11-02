@@ -1,8 +1,6 @@
-import { useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion, useMotionTemplate } from 'framer-motion';
-import { Shield, Terminal, LayoutDashboard, Zap, Lock, Eye, ChevronRight } from 'lucide-react';
-import { useMousePosition } from '../hooks/useMousePosition'; // You can remove this import if you aren't using the mouse hook yet
+import { motion } from 'framer-motion';
+import { Shield, Terminal, LayoutDashboard, Zap, Lock, Eye } from 'lucide-react';
 
 const FEATURES = [
     {
