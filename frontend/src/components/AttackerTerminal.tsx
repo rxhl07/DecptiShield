@@ -104,8 +104,14 @@ export default function AttackerTerminal() {
                         if (cmd === '') {
                             term.write(remotePrompt);
                         } else if (cmd === 'exit' || cmd === 'logout') {
+                            term.writeln('logout');
                             term.writeln('Connection to 192.168.1.100 closed.');
                             state = 'LOCAL';
+                            // End this attacker session on the backend: the server closes a browser
+                            // session when its socket disconnects. Reconnecting gives a fresh socket,
+                            // so the next login becomes a new session.
+                            socket.disconnect();
+                            socket.connect();
                             term.write(localPrompt);
                         } else {
                             isProcessing = true;
