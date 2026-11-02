@@ -98,14 +98,11 @@ export default function ReportButton({ logs, profile }: ReportProps) {
             <button
                 disabled={disabled}
                 onClick={generatePDF}
-                className={`flex w-full items-center justify-between gap-3 border-2 bg-ds-bg px-4 py-3.5 text-left transition-colors enabled:cursor-pointer ${tone}`}
+                className={`flex w-full items-center justify-center gap-2.5 border-2 bg-ds-bg px-4 py-3.5 transition-colors enabled:cursor-pointer ${tone}`}
             >
-                <span className="flex items-center gap-2.5 text-[15px] font-bold uppercase tracking-[0.02em]">
-                    {phase === 'done' ? <Download size={16} /> : <FileCode2 size={16} />}
+                {phase === 'done' ? <Download size={16} className="shrink-0" /> : <FileCode2 size={16} className="shrink-0" />}
+                <span className="whitespace-nowrap text-[14px] font-bold uppercase tracking-[0.04em]">
                     {phase === 'loading' ? 'Building report…' : phase === 'done' ? 'PDF downloaded' : 'Export forensic PDF'}
-                </span>
-                <span className="font-mono text-[11px] tracking-[0.08em] text-ds-dim">
-                    {logs.length} CMD
                 </span>
             </button>
             {logs.length === 0 && (

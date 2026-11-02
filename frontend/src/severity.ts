@@ -17,6 +17,7 @@ export function asBand(sev: string | undefined): Band {
 interface BandStyle {
     glyph: string;   // ▪ count = severity rank, readable without colour
     chip: string;    // filled chip classes
+    outline: string; // quieter outlined chip classes (text + border only)
     text: string;    // coloured text
     mark: string;    // left-border colour
     bandBg: string;  // muted background for the band ladder
@@ -27,6 +28,7 @@ export const BAND_STYLE: Record<Band, BandStyle> = {
     LOW: {
         glyph: '▪',
         chip: 'bg-transparent text-ds-low border-ds-line',
+        outline: 'text-ds-low border-ds-line',
         text: 'text-ds-low',
         mark: 'border-l-ds-low-mark',
         bandBg: 'bg-ds-low-band',
@@ -35,6 +37,7 @@ export const BAND_STYLE: Record<Band, BandStyle> = {
     MEDIUM: {
         glyph: '▪▪',
         chip: 'bg-ds-med text-ds-med-ink border-ds-med',
+        outline: 'text-ds-med border-ds-med/60',
         text: 'text-ds-med',
         mark: 'border-l-ds-med',
         bandBg: 'bg-ds-med-band',
@@ -43,6 +46,7 @@ export const BAND_STYLE: Record<Band, BandStyle> = {
     HIGH: {
         glyph: '▪▪▪',
         chip: 'bg-ds-high text-ds-high-ink border-ds-high',
+        outline: 'text-ds-high border-ds-high/60',
         text: 'text-ds-high',
         mark: 'border-l-ds-high',
         bandBg: 'bg-ds-high-band',
@@ -51,6 +55,7 @@ export const BAND_STYLE: Record<Band, BandStyle> = {
     CRITICAL: {
         glyph: '▪▪▪▪',
         chip: 'bg-ds-crit text-ds-crit-ink border-ds-crit',
+        outline: 'text-ds-crit border-ds-crit/70',
         text: 'text-ds-crit',
         mark: 'border-l-ds-crit',
         bandBg: 'bg-ds-crit-band',

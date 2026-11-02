@@ -5,7 +5,7 @@ import LiveFeed, { type LogEntry } from './LiveFeed';
 import ReportButton from './ReportButton';
 import { socket } from '../socket';
 import { useSessionList } from '../hooks/useSessionList';
-import { BAND_RANGE, BAND_STYLE, asBand, bandOf, type Band } from '../severity';
+import { BAND_STYLE, asBand, bandOf, type Band } from '../severity';
 
 // Event shapes (sessionId may be missing on legacy/untagged events)
 interface FeedEvent { sessionId?: string; command: string; response?: string; threatScore: number; severity: string; }
@@ -13,8 +13,19 @@ interface ProfileEvent { sessionId?: string; ip: string; geo: string; isp: strin
 interface SessionEvent { sessionId?: string; status?: 'active' | 'closed'; }
 type Profile = { ip: string; geo: string; isp: string; type: string; org?: string };
 
-const BANDS_DESC: Band[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
-const BANDS_ASC: Band[] = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+// 0-100 scale segments, matching the backend thresholds
+const SCALE: { band: Band; from: number; to: number; label: string }[] = [
+    { band: 'LOW', from: 0, to: 30, label: 'LOW' },
+    { band: 'MEDIUM', from: 30, to: 55, label: 'MED' },
+    { band: 'HIGH', from: 55, to: 80, label: 'HIGH' },
+    { band: 'CRITICAL', from: 80, to: 100, label: 'CRIT' },
+];
+
+function fmtClock(iso?: string) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
+}
 
 // Remount the dashboard per session so no state (profile, logs, selection) carries over
 // when switching sessions from the sidebar.
@@ -133,14 +144,9 @@ function Dashboard() {
     const bandSt = BAND_STYLE[band];
     const selected = sessionLogs.find((l) => l.id === selectedId) ?? sessionLogs[sessionLogs.length - 1];
     const following = !selectedId || !sessionLogs.some((l) => l.id === selectedId);
-    const trace = sessionLogs.slice(-18);
-    const firstInBand = new Map<Band, LogEntry>();
-    for (const l of sessionLogs) {
-        const b = asBand(l.risk);
-        if (!firstInBand.has(b)) firstInBand.set(b, l);
-    }
-    const notReached = BANDS_ASC.filter((b) => !firstInBand.has(b));
     const activeCount = sessions.filter((s) => s.status === 'active').length;
+    const current = sessions.find((s) => s.sessionId === sessionId);
+    const dead = isClosed || notFound;
 
     const toggleSelect = (id: string) => setSelectedId((cur) => (cur === id ? null : id));
 
@@ -148,66 +154,53 @@ function Dashboard() {
         <div className="min-h-screen w-full bg-ds-bg text-ds-ink">
             <TopNav />
 
-            <div className="grid grid-cols-1 xl:h-[calc(100vh-54px)] xl:grid-cols-[264px_minmax(0,1fr)_348px] xl:overflow-hidden">
+            <div className="grid grid-cols-1 xl:h-[calc(100vh-54px)] xl:grid-cols-[272px_minmax(0,1fr)_320px] xl:overflow-hidden">
 
                 {/* ───────── LEFT: sessions ───────── */}
                 <aside className="flex flex-col border-b-2 border-ds-line xl:min-h-0 xl:border-b-0 xl:border-r-2">
-                    <div className="flex items-center justify-between border-b-2 border-ds-line px-[14px] py-2.5">
+                    <div className="flex items-baseline justify-between px-5 pb-3 pt-5">
                         <button onClick={() => navigate('/sessions')} className="ds-label cursor-pointer hover:text-ds-ink">
-                            ← Sessions
+                            ← All sessions
                         </button>
-                        <span className="font-mono text-[11px] font-bold tracking-[0.08em] text-ds-acc">
-                            {activeCount} ACTIVE / {sessions.length}
+                        <span className="font-mono text-[11px] text-ds-faint">
+                            <span className="font-bold text-ds-acc">{activeCount}</span> active
                         </span>
                     </div>
-                    <div className="ds-scroll max-h-[260px] overflow-y-auto xl:max-h-none xl:flex-1">
+                    <div className="ds-scroll max-h-[260px] overflow-y-auto border-t border-ds-line xl:max-h-none xl:flex-1">
                         {sessions.length === 0 && (
-                            <div className="px-[14px] py-6 font-mono text-[11px] text-ds-faint">No current sessions</div>
+                            <div className="px-5 py-6 font-mono text-[11.5px] text-ds-faint">No current sessions</div>
                         )}
                         {sessions.map((s) => {
                             const on = s.sessionId === sessionId;
                             const live = s.status === 'active';
                             const sb = bandOf(s.threatScore);
-                            const sst = BAND_STYLE[sb];
                             return (
                                 <button
                                     key={s.sessionId}
                                     onClick={() => navigate(`/dashboard/${encodeURIComponent(s.sessionId)}`)}
-                                    className={`block w-full cursor-pointer border-b border-l-4 border-b-ds-hair px-[14px] py-3 text-left transition-colors ${on ? 'border-l-ds-acc bg-ds-sel' : 'border-l-transparent hover:bg-ds-sel'}`}
+                                    className={`block w-full cursor-pointer border-b border-l-2 border-b-ds-hair py-4 pl-[18px] pr-5 text-left transition-colors ${on ? 'border-l-ds-acc bg-ds-sel' : 'border-l-transparent hover:bg-ds-sel/70'}`}
                                 >
-                                    <div className="mb-1.5 flex items-center justify-between">
-                                        <span className={`font-mono text-[12.5px] font-bold tracking-[0.02em] ${on ? 'text-ds-ink' : 'text-ds-soft'}`}>{s.sessionId}</span>
-                                        <span className={`font-mono text-[10px] font-bold tracking-[0.1em] ${live ? 'text-ds-acc' : 'text-ds-faint'}`}>
-                                            {live ? '● ACTIVE' : '■ CLOSED'}
-                                        </span>
+                                    <div className="flex items-center justify-between">
+                                        <span className={`font-mono text-[13px] font-bold ${on ? 'text-ds-ink' : live ? 'text-ds-soft' : 'text-ds-dim'}`}>{s.sessionId}</span>
+                                        <span className={`h-2 w-2 ${live ? 'bg-ds-acc' : 'bg-ds-ghost'}`} title={live ? 'Active' : 'Closed'} />
                                     </div>
-                                    <div className="mb-2 font-mono text-[11px] text-ds-dim">{s.ip} · {s.source}</div>
-                                    <div className="flex items-center gap-2">
-                                        <span className={`inline-flex items-center gap-1.5 border px-1.5 py-[2px] font-mono text-[10px] font-bold tracking-[0.06em] ${sst.chip}`}>
-                                            {sst.glyph} {s.threatScore}
-                                        </span>
-                                        <span className="font-mono text-[10px] text-ds-faint">{s.commandCount} CMD</span>
+                                    <div className="mt-1 font-mono text-[11px] text-ds-faint">
+                                        {s.ip} · {s.commandCount} cmd · <span className={BAND_STYLE[sb].text}>{s.threatScore}</span>
                                     </div>
                                 </button>
                             );
                         })}
-                    </div>
-                    <div className="hidden border-t-2 border-ds-line px-[14px] py-3 xl:block">
-                        <div className="ds-label mb-1.5">Honeypot</div>
-                        <div className="font-mono text-[11px] leading-relaxed text-ds-dim">
-                            SSH on port 2222<br />Poses as ubuntu@prod-db-01
-                        </div>
                     </div>
                 </aside>
 
                 {/* ───────── CENTER: adversary, feed, response ───────── */}
                 <section className="flex flex-col border-b-2 border-ds-line xl:min-h-0 xl:border-b-0 xl:border-r-2">
                     {/* adversary identity */}
-                    <div className="border-b-2 border-ds-line bg-ds-panel px-[18px] pb-4 pt-3.5">
-                        <div className="flex items-start justify-between gap-5">
+                    <div className="border-b-2 border-ds-line bg-ds-panel px-6 pb-5 pt-5">
+                        <div className="flex items-start justify-between gap-6">
                             <div className="min-w-0">
-                                <div className="ds-label mb-1.5">
-                                    {sessionId ? <>Adversary · session <span className="text-ds-ink">{sessionId}</span></> : 'All sessions (unfiltered view)'}
+                                <div className="ds-label mb-2">
+                                    {sessionId ? <>Attacker · <span className="text-ds-ink">{sessionId}</span></> : 'All sessions (unfiltered view)'}
                                 </div>
                                 <div
                                     title={waiting ? undefined : profile.geo}
@@ -216,26 +209,23 @@ function Dashboard() {
                                     {waiting ? 'Awaiting attacker' : profile.geo}
                                 </div>
                             </div>
-                            {sessionId && (() => {
-                                const dead = isClosed || notFound;
-                                return (
-                                    <div className={`flex shrink-0 items-center gap-2 border-2 px-3 py-1.5 ${dead ? 'border-ds-faint' : 'border-ds-acc'}`}>
-                                        <span className={`h-2 w-2 ${dead ? 'bg-ds-faint' : 'animate-[ds-pulse_1.6s_steps(1)_infinite] bg-ds-acc'}`} />
-                                        <span className={`font-mono text-[11px] font-bold tracking-[0.14em] ${dead ? 'text-ds-dim' : 'text-ds-acc'}`}>
-                                            {notFound ? 'NOT FOUND' : isClosed ? 'SESSION CLOSED' : 'LIVE'}
-                                        </span>
-                                    </div>
-                                );
-                            })()}
+                            {sessionId && (
+                                <div className={`flex shrink-0 items-center gap-2 border px-3 py-1.5 ${dead ? 'border-ds-ghost' : 'border-ds-acc'}`}>
+                                    <span className={`h-2 w-2 ${dead ? 'bg-ds-faint' : 'animate-[ds-pulse_1.6s_steps(1)_infinite] bg-ds-acc'}`} />
+                                    <span className={`font-mono text-[11px] font-bold tracking-[0.14em] ${dead ? 'text-ds-dim' : 'text-ds-acc'}`}>
+                                        {notFound ? 'NOT FOUND' : isClosed ? 'SESSION CLOSED' : 'LIVE'}
+                                    </span>
+                                </div>
+                            )}
                         </div>
-                        <div className="mt-3.5 grid grid-cols-2 gap-px bg-ds-line md:grid-cols-4">
+                        <div className="mt-5 grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
                             {[
                                 { k: 'IP address', v: profile.ip },
                                 { k: 'ISP', v: profile.isp },
                                 { k: 'Organisation', v: profile.org || '—' },
                                 { k: 'Connection', v: profile.type },
                             ].map((c) => (
-                                <div key={c.k} className="min-w-0 bg-ds-panel px-3 py-2">
+                                <div key={c.k} className="min-w-0">
                                     <div className="mb-1 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-ds-faint">{c.k}</div>
                                     <div title={c.v} className={`truncate font-mono text-[13px] ${waiting ? 'text-ds-faint' : 'text-ds-ink'}`}>{c.v}</div>
                                 </div>
@@ -244,8 +234,8 @@ function Dashboard() {
                     </div>
 
                     {sessionId && notFound && (
-                        <div className="border-b-2 border-ds-line bg-ds-high px-[18px] py-2 font-mono text-[12px] font-bold tracking-[0.06em] text-ds-high-ink">
-                            SESSION {sessionId} NOT FOUND. IT MAY HAVE ENDED BEFORE A BACKEND RESTART.
+                        <div className="border-b border-ds-line bg-ds-high/10 px-6 py-2.5 font-mono text-[12px] text-ds-high">
+                            Session {sessionId} not found. It may have ended before a backend restart.
                         </div>
                     )}
 
@@ -255,24 +245,21 @@ function Dashboard() {
                     </div>
 
                     {/* what the attacker saw */}
-                    <div className="flex h-[210px] shrink-0 flex-col border-t-2 border-ds-line bg-ds-panel">
-                        <div className="flex items-center justify-between border-b border-ds-line px-[18px] py-2">
-                            <span className="ds-label">What the attacker saw: AI response</span>
-                            <span className="font-mono text-[10.5px] tracking-[0.1em] text-ds-faint">
-                                {!selected ? 'NO COMMANDS YET' : following ? 'FOLLOWING LATEST' : 'SELECTED ROW · CLICK AGAIN TO FOLLOW LATEST'}
+                    <div className="flex h-[220px] shrink-0 flex-col border-t-2 border-ds-line bg-ds-panel">
+                        <div className="flex items-baseline justify-between px-6 pb-2 pt-4">
+                            <span className="ds-label">What the attacker saw</span>
+                            <span className="font-mono text-[11px] text-ds-faint">
+                                {!selected ? '' : following ? 'Latest command · click a row to pick another' : 'Selected · click again for latest'}
                             </span>
                         </div>
-                        <div className="ds-scroll flex-1 overflow-y-auto px-[18px] pb-4 pt-3 font-mono">
+                        <div className="ds-scroll flex-1 overflow-y-auto px-6 pb-5 font-mono">
                             {!selected ? (
-                                <div className="text-[12.5px] text-ds-faint">Select a command in the feed to see the output the attacker was shown.</div>
+                                <div className="pt-1 text-[12.5px] text-ds-faint">The AI's reply to each command will show here.</div>
                             ) : (
                                 <>
-                                    <div className="mb-2.5 flex flex-wrap items-center gap-2.5 text-[13px]">
+                                    <div className="mb-2.5 flex flex-wrap items-center gap-2.5 pt-1 text-[13px]">
                                         <span className="text-ds-faint">ubuntu@prod-db-01:~$</span>
                                         <span className="font-bold text-ds-ink">{selected.command}</span>
-                                        <span className={`border px-1.5 py-[2px] text-[10px] font-bold tracking-[0.08em] ${BAND_STYLE[asBand(selected.risk)].chip}`}>
-                                            {asBand(selected.risk)} {selected.score}
-                                        </span>
                                     </div>
                                     <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-ds-soft">
                                         {selected.response === undefined
@@ -287,93 +274,63 @@ function Dashboard() {
                     </div>
                 </section>
 
-                {/* ───────── RIGHT: threat, escalation, export ───────── */}
-                <aside className="flex flex-col xl:min-h-0">
-                    {/* threat level */}
-                    <div className="border-b-2 border-ds-line">
-                        <div className="flex items-center justify-between border-b-2 border-ds-line px-[14px] py-2.5">
-                            <span className="ds-label">Threat level</span>
-                            <span className="font-mono text-[10.5px] tracking-[0.08em] text-ds-faint">SESSION AVERAGE · 0–100</span>
-                        </div>
-                        <div className="flex gap-3.5 px-[14px] pb-3.5 pt-3">
-                            <div className="min-w-0 flex-1">
-                                <div className={`ds-display text-[96px] leading-[0.82] tracking-[-0.04em] ${!hasData ? 'text-ds-ghost' : band === 'LOW' ? 'text-ds-ink' : bandSt.text}`}>
-                                    {hasData ? threatScore : '–'}
-                                </div>
-                                <div className={`mt-2.5 inline-block border-2 px-2 py-1 font-mono text-[12px] font-bold tracking-[0.14em] ${hasData ? bandSt.chip : 'border-ds-ghost text-ds-faint'}`}>
-                                    {hasData ? band : 'NO DATA'}
-                                </div>
-                                <div className="mt-3.5 flex h-[34px] items-end gap-0.5">
-                                    {trace.map((l) => (
-                                        <div
-                                            key={l.id}
-                                            title={`${l.command} · ${l.score}`}
-                                            className={`w-[5px] ${BAND_STYLE[asBand(l.risk)].traceBg}`}
-                                            style={{ height: `${Math.max(6, Math.round(l.score * 0.34))}px` }}
-                                        />
-                                    ))}
-                                </div>
-                                <div className="mt-1.5 font-mono text-[10px] tracking-[0.1em] text-ds-faint">
-                                    SCORE TRACE · LAST {trace.length} COMMANDS
-                                </div>
-                            </div>
-                            <div className="flex w-[104px] flex-col gap-0.5">
-                                {BANDS_DESC.map((b) => {
-                                    const on = hasData && b === band;
-                                    const st = BAND_STYLE[b];
-                                    return (
-                                        <div
-                                            key={b}
-                                            className={`flex flex-1 flex-col justify-between border-l-4 px-1.5 py-1 ${on ? `${b === 'LOW' ? 'bg-ds-sel text-ds-ink' : st.chip} border-l-ds-ink` : `${st.bandBg} ${st.mark} ${st.text}`}`}
-                                            style={{ flexGrow: b === 'LOW' ? 30 : b === 'CRITICAL' ? 22 : 24 }}
-                                        >
-                                            <span className="font-mono text-[9.5px] font-bold tracking-[0.06em]">{st.glyph} {b}</span>
-                                            <span className="font-mono text-[9.5px] opacity-80">{BAND_RANGE[b]}</span>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
+                {/* ───────── RIGHT: threat level, facts, export ───────── */}
+                <aside className="flex flex-col px-6 py-5 xl:min-h-0">
+                    <div className="ds-label">Threat level</div>
+
+                    <div className={`ds-display mt-4 text-[96px] leading-[0.82] tracking-[-0.04em] ${!hasData ? 'text-ds-ghost' : band === 'LOW' ? 'text-ds-ink' : bandSt.text}`}>
+                        {hasData ? threatScore : '–'}
+                    </div>
+                    <div className={`mt-3 self-start border-2 px-2.5 py-1 font-mono text-[12px] font-bold tracking-[0.14em] ${hasData ? bandSt.chip : 'border-ds-ghost text-ds-faint'}`}>
+                        {hasData ? band : 'NO DATA'}
                     </div>
 
-                    {/* escalation path */}
-                    <div className="flex flex-col border-b-2 border-ds-line xl:min-h-0 xl:flex-1">
-                        <div className="border-b-2 border-ds-line px-[14px] py-2.5">
-                            <div className="ds-label">Escalation path</div>
-                            <div className="mt-1 font-mono text-[10.5px] tracking-[0.04em] text-ds-faint">
-                                COMMAND AT WHICH THE SESSION FIRST REACHED EACH BAND
-                            </div>
+                    {/* 0-100 scale with marker */}
+                    <div className="mt-6">
+                        <div className="relative flex h-2 gap-0.5">
+                            {SCALE.map((seg) => (
+                                <div
+                                    key={seg.band}
+                                    className={`${hasData && seg.band === band ? BAND_STYLE[seg.band].traceBg : BAND_STYLE[seg.band].bandBg}`}
+                                    style={{ width: `${seg.to - seg.from}%` }}
+                                />
+                            ))}
+                            {hasData && (
+                                <div
+                                    className="absolute -top-1.5 h-5 w-[3px] bg-ds-ink"
+                                    style={{ left: `calc(${Math.min(100, Math.max(0, threatScore))}% - 1.5px)` }}
+                                />
+                            )}
                         </div>
-                        <div className="ds-scroll overflow-y-auto xl:flex-1">
-                            {/* Map keeps insertion order = chronological order of first reaching each band */}
-                            {[...firstInBand.entries()].map(([b, l]) => {
-                                const st = BAND_STYLE[b];
-                                return (
-                                    <div key={b} className="flex gap-2.5 border-b border-ds-hair px-[14px] py-2.5">
-                                        <div className={`w-[3px] shrink-0 ${st.traceBg}`} />
-                                        <div className="min-w-0 flex-1">
-                                            <div className="mb-1 flex justify-between gap-2 font-mono text-[10.5px]">
-                                                <span className={`font-bold tracking-[0.08em] ${st.text}`}>{st.glyph} {b}</span>
-                                                <span className="text-ds-faint">{l.timestamp.slice(11)}</span>
-                                            </div>
-                                            <div title={l.command} className="truncate font-mono text-[12px] text-ds-soft">{l.command}</div>
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                            {hasData && notReached.length > 0 && (
-                                <div className="px-[14px] py-2.5 font-mono text-[10.5px] tracking-[0.06em] text-ds-faint">
-                                    NOT YET REACHED: {notReached.join(' · ')}
-                                </div>
-                            )}
-                            {!hasData && (
-                                <div className="px-[14px] py-4 font-mono text-[11px] text-ds-faint">No commands yet.</div>
-                            )}
+                        <div className="mt-2 flex font-mono text-[9.5px] tracking-[0.1em] text-ds-faint">
+                            {SCALE.map((seg) => (
+                                <span key={seg.band} style={{ width: `${seg.to - seg.from}%` }}>{seg.label}</span>
+                            ))}
                         </div>
                     </div>
+                    <p className="mt-4 text-[13px] leading-relaxed text-ds-dim">
+                        Average score across {sessionLogs.length} {sessionLogs.length === 1 ? 'command' : 'commands'}.
+                    </p>
 
-                    {/* export */}
-                    <div className="px-[14px] py-3.5">
+                    {/* session facts */}
+                    {sessionId && (
+                        <dl className="mt-6 border-t border-ds-line pt-5 font-mono text-[12px]">
+                            {[
+                                { k: 'Source', v: current?.source === 'WEB' ? 'Browser simulator' : current?.source === 'SSH' ? 'SSH (port 2222)' : (current?.source ?? '—') },
+                                { k: 'Started', v: fmtClock(current?.startTime) },
+                                { k: 'Ended', v: isClosed ? fmtClock(current?.endTime ?? undefined) : '—' },
+                            ].map((f) => (
+                                <div key={f.k} className="flex justify-between gap-4 py-1.5">
+                                    <dt className="text-ds-faint">{f.k}</dt>
+                                    <dd className="m-0 truncate text-right text-ds-soft">{f.v}</dd>
+                                </div>
+                            ))}
+                        </dl>
+                    )}
+
+                    <div className="hidden flex-1 xl:block" />
+
+                    <div className="mt-6">
                         <ReportButton logs={sessionLogs} profile={profile} />
                     </div>
                 </aside>

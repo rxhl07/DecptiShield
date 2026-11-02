@@ -32,29 +32,28 @@ export default function LiveFeed({ logs, selectedId = null, onSelect }: LiveFeed
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">
-            <div className="flex items-center justify-between border-b-2 border-ds-line px-[18px] py-2.5">
+            <div className="flex items-baseline justify-between px-6 pb-3 pt-5">
                 <span className="ds-label">Live command feed</span>
-                <span className="font-mono text-[10.5px] tracking-[0.1em] text-ds-faint">
-                    {logs.length} CMD · NEWEST AT BOTTOM · CLICK A ROW FOR ITS OUTPUT
+                <span className="font-mono text-[11px] text-ds-faint">
+                    {logs.length} {logs.length === 1 ? 'command' : 'commands'}
                 </span>
             </div>
 
-            {/* column headings */}
             {logs.length > 0 && (
-                <div className="flex items-center gap-3 border-b border-ds-line pl-[18px] pr-[14px] py-1.5 font-mono text-[10px] font-bold tracking-[0.16em] text-ds-faint">
+                <div className="flex items-center gap-4 border-b border-ds-line px-6 pb-2 font-mono text-[10px] font-bold tracking-[0.16em] text-ds-faint">
                     <span className="w-[64px] shrink-0">TIME</span>
                     <span className="flex-1">COMMAND</span>
-                    <span className="w-[104px] shrink-0 text-center">SEVERITY</span>
-                    <span className="w-[42px] shrink-0 text-right">SCORE</span>
+                    <span className="w-[92px] shrink-0 text-center">SEVERITY</span>
+                    <span className="w-[40px] shrink-0 text-right">SCORE</span>
                 </div>
             )}
 
             <div ref={scrollRef} className="ds-scroll min-h-[160px] flex-1 overflow-y-auto font-mono">
                 {logs.length === 0 && (
-                    <div className="flex h-full flex-col items-center justify-center gap-3.5 px-6 py-12 text-center">
-                        <div className="h-[22px] w-[22px] animate-[ds-pulse_2.4s_ease-in-out_infinite] border-2 border-ds-line" />
+                    <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+                        <div className="h-[18px] w-[18px] animate-[ds-pulse_2.4s_ease-in-out_infinite] border-2 border-ds-line" />
                         <div className="text-[13px] uppercase tracking-[0.2em] text-ds-dim">Awaiting contact</div>
-                        <div className="text-[11px] text-ds-faint">Commands typed by the attacker will appear here as they arrive</div>
+                        <div className="text-[11.5px] text-ds-faint">Commands typed by the attacker will appear here</div>
                     </div>
                 )}
 
@@ -64,29 +63,28 @@ export default function LiveFeed({ logs, selectedId = null, onSelect }: LiveFeed
                     const crit = band === 'CRITICAL';
                     const selected = entry.id === selectedId;
                     const rowCls = crit
-                        ? 'bg-ds-crit text-ds-crit-ink border-l-ds-crit-ink'
+                        ? 'bg-ds-crit text-ds-crit-ink'
                         : selected
-                            ? `bg-ds-sel text-ds-ink border-l-ds-acc`
-                            : `text-ds-ink hover:bg-ds-sel ${st.mark}`;
+                            ? 'bg-ds-sel text-ds-ink'
+                            : 'text-ds-ink hover:bg-ds-sel/70';
                     return (
                         <div
                             key={entry.id}
                             onClick={onSelect ? () => onSelect(entry.id) : undefined}
-                            className={`flex items-center gap-3 border-b border-l-4 border-b-ds-hair pl-[14px] pr-[14px] animate-[ds-row-in_120ms_ease-out] ${crit ? 'py-3' : 'py-2.5'} ${onSelect ? 'cursor-pointer' : ''} ${rowCls} ${selected && crit ? 'outline-2 outline-offset-[-2px] outline-ds-acc' : ''}`}
+                            className={`flex items-center gap-4 border-b border-l-2 border-b-ds-hair py-3 pl-[22px] pr-6 animate-[ds-row-in_120ms_ease-out] ${onSelect ? 'cursor-pointer' : ''} ${rowCls} ${selected ? 'border-l-ds-acc' : 'border-l-transparent'}`}
                         >
                             <span className={`w-[64px] shrink-0 text-[11.5px] ${crit ? 'text-ds-crit-dim' : 'text-ds-faint'}`}>
                                 {entry.timestamp.slice(11)}
                             </span>
-                            <span className={`min-w-0 flex-1 truncate ${crit ? 'text-[15px] font-bold' : 'text-[13.5px] font-medium'}`}>
+                            <span className={`min-w-0 flex-1 truncate text-[13.5px] ${crit ? 'font-bold' : 'font-medium'}`}>
                                 {entry.command}
                             </span>
                             <span
-                                className={`inline-flex w-[104px] shrink-0 items-center justify-center gap-1.5 border px-[7px] py-[3px] text-[10.5px] font-bold tracking-[0.08em] ${crit ? 'border-ds-crit-ink bg-ds-crit-ink text-ds-crit' : st.chip}`}
+                                className={`w-[92px] shrink-0 border py-[3px] text-center text-[10.5px] font-bold tracking-[0.1em] ${crit ? 'border-ds-crit-ink/60 text-ds-crit-ink' : st.outline}`}
                             >
-                                <span>{st.glyph}</span>
-                                <span>{band}</span>
+                                {band}
                             </span>
-                            <span className="w-[42px] shrink-0 text-right text-[13px] font-bold">{entry.score}</span>
+                            <span className={`w-[40px] shrink-0 text-right text-[13px] font-bold ${crit ? '' : 'text-ds-soft'}`}>{entry.score}</span>
                         </div>
                     );
                 })}
