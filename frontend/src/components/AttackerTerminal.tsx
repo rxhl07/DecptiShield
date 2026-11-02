@@ -126,7 +126,7 @@ export default function AttackerTerminal() {
         <div className="h-screen w-full bg-[#050505] flex flex-col relative">
             <div className="h-14 bg-white/5 border-b border-white/10 flex items-center justify-between px-8">
                 <span className="text-[#10B981] font-mono font-bold uppercase">SSH Session // Active</span>
-                <button onClick={() => navigate('/dashboard')} className="flex items-center gap-2 text-slate-500 hover:text-white font-mono text-xs tracking-widest transition-colors">
+                <button onClick={() => navigate('/sessions')} className="flex items-center gap-2 text-slate-500 hover:text-white font-mono text-xs tracking-widest transition-colors">
                     <ArrowLeft size={14} /> Return to SOC
                 </button>
             </div>

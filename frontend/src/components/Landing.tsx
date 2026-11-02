@@ -74,7 +74,7 @@ export default function Landing() {
                     <button className="cyber-btn-ghost w-full sm:w-auto flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-bold text-sm tracking-[0.15em] uppercase" onClick={() => navigate('/attacker')}>
                         <Terminal size={18} /> Launch Attack Sim
                     </button>
-                    <button className="cyber-btn-primary w-full sm:w-auto flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-bold text-sm tracking-[0.15em] uppercase" onClick={() => navigate('/dashboard')}>
+                    <button className="cyber-btn-primary w-full sm:w-auto flex items-center justify-center gap-3 px-8 py-4 rounded-xl font-bold text-sm tracking-[0.15em] uppercase" onClick={() => navigate('/sessions')}>
                         <LayoutDashboard size={18} /> SOC Command Center
                     </button>
                 </motion.div>
