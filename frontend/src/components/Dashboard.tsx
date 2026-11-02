@@ -46,6 +46,14 @@ function Dashboard() {
     const [notFound, setNotFound] = useState(false);
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const { sessions } = useSessionList();
+    // Sidebar collapse is a per-viewer UI preference (wide screens only); storage may be unavailable.
+    const [collapsed, setCollapsed] = useState<boolean>(() => {
+        try { return localStorage.getItem('ds.sidebarCollapsed') === '1'; } catch { return false; }
+    });
+    const toggleCollapsed = () => setCollapsed((c) => {
+        try { localStorage.setItem('ds.sidebarCollapsed', c ? '0' : '1'); } catch { /* ignore */ }
+        return !c;
+    });
 
     useEffect(() => {
         let cancelled = false;
@@ -154,17 +162,58 @@ function Dashboard() {
         <div className="min-h-screen w-full bg-ds-bg text-ds-ink">
             <TopNav />
 
-            <div className="grid grid-cols-1 xl:h-[calc(100vh-54px)] xl:grid-cols-[272px_minmax(0,1fr)_320px] xl:overflow-hidden">
+            <div className={`grid grid-cols-1 xl:h-[calc(100vh-54px)] xl:overflow-hidden ${collapsed ? 'xl:grid-cols-[52px_minmax(0,1fr)_320px]' : 'xl:grid-cols-[272px_minmax(0,1fr)_320px]'}`}>
 
                 {/* ───────── LEFT: sessions ───────── */}
-                <aside className="flex flex-col border-b-2 border-ds-line xl:min-h-0 xl:border-b-0 xl:border-r-2">
-                    <div className="flex items-baseline justify-between px-5 pb-3 pt-5">
+                {/* collapsed rail (wide screens only): one square per session */}
+                {collapsed && (
+                    <aside className="hidden flex-col items-center border-r-2 border-ds-line xl:flex xl:min-h-0">
+                        <button
+                            onClick={toggleCollapsed}
+                            title="Expand session list"
+                            className="mt-4 flex h-8 w-8 cursor-pointer items-center justify-center border border-ds-line font-mono text-[13px] text-ds-dim hover:border-ds-acc hover:text-ds-acc"
+                        >
+                            »
+                        </button>
+                        <div className="mt-3 font-mono text-[10px] text-ds-faint" title={`${activeCount} active`}>
+                            <span className="font-bold text-ds-acc">{activeCount}</span>
+                        </div>
+                        <div className="ds-scroll mt-3 flex w-full flex-1 flex-col items-center gap-2 overflow-y-auto pb-4">
+                            {sessions.map((s) => {
+                                const on = s.sessionId === sessionId;
+                                const live = s.status === 'active';
+                                return (
+                                    <button
+                                        key={s.sessionId}
+                                        title={`${s.sessionId} · ${live ? 'active' : 'closed'} · avg ${s.threatScore}`}
+                                        onClick={() => navigate(`/dashboard/${encodeURIComponent(s.sessionId)}`)}
+                                        className={`flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center border ${on ? 'border-ds-acc' : 'border-transparent hover:border-ds-line'}`}
+                                    >
+                                        <span className={`h-2.5 w-2.5 ${live ? 'bg-ds-acc' : 'bg-ds-ghost'}`} />
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </aside>
+                )}
+
+                <aside className={`flex-col border-b-2 border-ds-line xl:min-h-0 xl:border-b-0 xl:border-r-2 ${collapsed ? 'flex xl:hidden' : 'flex'}`}>
+                    <div className="flex items-center justify-between gap-2 px-5 pb-3 pt-5">
                         <button onClick={() => navigate('/sessions')} className="ds-label cursor-pointer hover:text-ds-ink">
                             ← All sessions
                         </button>
-                        <span className="font-mono text-[11px] text-ds-faint">
-                            <span className="font-bold text-ds-acc">{activeCount}</span> active
-                        </span>
+                        <div className="flex items-center gap-3">
+                            <span className="font-mono text-[11px] text-ds-faint">
+                                <span className="font-bold text-ds-acc">{activeCount}</span> active
+                            </span>
+                            <button
+                                onClick={toggleCollapsed}
+                                title="Collapse session list"
+                                className="hidden h-6 w-6 cursor-pointer items-center justify-center border border-ds-line font-mono text-[12px] text-ds-dim hover:border-ds-acc hover:text-ds-acc xl:flex"
+                            >
+                                «
+                            </button>
+                        </div>
                     </div>
                     <div className="ds-scroll max-h-[260px] overflow-y-auto border-t border-ds-line xl:max-h-none xl:flex-1">
                         {sessions.length === 0 && (
@@ -185,7 +234,7 @@ function Dashboard() {
                                         <span className={`h-2 w-2 ${live ? 'bg-ds-acc' : 'bg-ds-ghost'}`} title={live ? 'Active' : 'Closed'} />
                                     </div>
                                     <div className="mt-1 font-mono text-[11px] text-ds-faint">
-                                        {s.ip} · {s.commandCount} cmd · <span className={BAND_STYLE[sb].text}>{s.threatScore}</span>
+                                        {s.ip} · {s.commandCount} cmd · avg <span className={BAND_STYLE[sb].text}>{s.threatScore}</span>
                                     </div>
                                 </button>
                             );

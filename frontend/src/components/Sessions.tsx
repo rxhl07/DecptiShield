@@ -63,7 +63,7 @@ export default function Sessions() {
                                         <th className="border-b border-ds-line px-3 py-2.5 font-bold">Attacker IP</th>
                                         <th className="border-b border-ds-line px-3 py-2.5 font-bold">Started</th>
                                         <th className="border-b border-ds-line px-3 py-2.5 font-bold">Status</th>
-                                        <th className="border-b border-ds-line px-3 py-2.5 font-bold">Threat score</th>
+                                        <th className="border-b border-ds-line px-3 py-2.5 font-bold">Avg threat score</th>
                                         <th className="border-b border-ds-line px-3 py-2.5 text-right font-bold">Commands</th>
                                         <th className="border-b border-ds-line py-2.5 pl-3 pr-[18px]" />
                                     </tr>
