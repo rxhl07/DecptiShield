@@ -48,6 +48,9 @@ export default function AttackerTerminal() {
 
         term.onData((data) => {
             if (isProcessing) return;
+            // Ignore escape sequences (arrow keys, Home/End, Delete, F-keys): this shell has
+            // no history/cursor movement, and the raw codes would otherwise be sent as a command.
+            if (data.startsWith('\x1b')) return;
 
             for (const char of data) {
                 if (char === '\r' || char === '\n') {
@@ -96,6 +99,9 @@ export default function AttackerTerminal() {
                         commandBuffer = commandBuffer.slice(0, -1);
                         if (state !== 'PASSWORD') term.write('\b \b');
                     }
+                } else if (char < ' ') {
+                    // Other control characters (Tab, Ctrl+key): ignore instead of adding to the command
+                    continue;
                 } else {
                     commandBuffer += char;
                     if (state !== 'PASSWORD') term.write(char);
